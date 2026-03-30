@@ -1,13 +1,13 @@
 -- ============================================================
---  transfer.lua  v5.0
---  Main: carga modulos, inicia loops en paralelo.
+--  transfer.lua  v5.1
+--  Main: carga modulos, inicia 5 monitores, loops en paralelo
 --
---  Archivos:
---    transfer_lib.lua    = utilidades, inventarios, dibujo
---    transfer_tasks.lua  = CRUD de tareas + orquestador
---    transfer_worker.lua = worker de vaciado continuo
---    transfer_ui.lua     = todas las pantallas del monitor
---    transfer.lua        = este archivo (main)
+--  Monitores:
+--    14 (3x3) CONTROL    = Transferir, Vaciar, Worker
+--    10 (3x3) AUTOMATIZAR = Tareas, Reglas
+--    13 (3x3) INVENTARIO  = Explorar, Buscar, Historial
+--    12 (2x7) DASHBOARD   = Status en vivo (techo)
+--    11 (2x7) ACTIVIDAD   = Feed de eventos (techo)
 -- ============================================================
 
 local lib    = require("transfer_lib")
@@ -15,50 +15,47 @@ local tasks  = require("transfer_tasks")
 local worker = require("transfer_worker")
 local ui     = require("transfer_ui")
 
--- Shortcuts
 local st = lib.state
 
 -- ============================================================
 --  Loops
 -- ============================================================
 
--- Loop del monitor (eventos tactiles)
-local function monitorLoop()
-    while st.screen ~= "exit" do
-        local event, side, x, y = os.pullEvent()
-        if event == "monitor_touch" and side == lib.MONITOR_SIDE then
-            ui.handleTouch(x, y)
-            ui.render()
-            lib.drawTerminal()
-        elseif event == "peripheral" or event == "peripheral_detach" then
-            lib.refreshInventories()
-            ui.render()
-        elseif event == "worker_update" then
-            -- Evento lanzado por el workerLoop para refrescar UI
-            if st.screen == "worker_running" then
-                ui.render()
-            end
-        end
+-- Touch events (interactive monitors)
+local function touchLoop()
+    while st.running do
+        local _, side, x, y = os.pullEvent("monitor_touch")
+        ui.handleTouch(side, x, y)
     end
 end
 
--- Loop de reglas automaticas
+-- Dashboard + Activity auto-refresh
+local function refreshLoop()
+    while st.running do
+        ui.markDirty("dashboard")
+        ui.markDirty("activity")
+        ui.renderMonitor("dashboard")
+        ui.renderMonitor("activity")
+        sleep(3)
+    end
+end
+
+-- Auto rules
 local function rulesLoop()
-    while st.screen ~= "exit" do
+    while st.running do
         sleep(1)
         if st.rulesRunning then
             local now = os.clock()
             for _, rule in ipairs(st.rules) do
                 if rule.enabled then
-                    local lastRun = rule.lastRun or 0
-                    if now - lastRun >= rule.interval then
+                    local lr = rule.lastRun or 0
+                    if now - lr >= rule.interval then
                         rule.lastRun = now
                         local moved = lib.executeRule(rule)
                         if moved > 0 then
-                            local shortItem = rule.item == "*" and "todo" or (rule.item:match(":(.+)") or rule.item)
-                            lib.tLog("[AUTO] " .. moved .. "x " .. shortItem)
+                            local si = rule.item == "*" and "todo" or (rule.item:match(":(.+)") or rule.item)
+                            lib.tLog("[AUTO] " .. moved .. "x " .. si)
                             lib.addHistory(rule.from, rule.to, rule.item, rule.cantidad, moved)
-                            lib.drawTerminal()
                         end
                     end
                 end
@@ -67,11 +64,36 @@ local function rulesLoop()
     end
 end
 
--- Loop de refresco del terminal
+-- Terminal display
 local function terminalLoop()
-    while st.screen ~= "exit" do
+    while st.running do
         lib.drawTerminal()
         sleep(5)
+    end
+end
+
+-- Worker update handler
+local function workerEventLoop()
+    while st.running do
+        os.pullEvent("worker_update")
+        -- Refresh control monitor if showing worker screen
+        local ctrl = ui.monitors.control
+        if ctrl and ctrl.nav.screen:find("^wk_") then
+            ui.markDirty("control")
+            ui.renderMonitor("control")
+        end
+        -- Dashboards get refreshed in refreshLoop
+    end
+end
+
+-- Log update handler (refresh activity on new log entries)
+local function logEventLoop()
+    while st.running do
+        os.pullEvent("log_update")
+        -- Activity monitor will catch up on next refreshLoop cycle
+        -- But for faster feedback, render immediately
+        ui.markDirty("activity")
+        ui.renderMonitor("activity")
     end
 end
 
@@ -82,39 +104,45 @@ end
 local function main()
     term.clear()
     term.setCursorPos(1, 1)
+    st.startTime = os.clock()
 
-    -- Init monitor
-    if not lib.init() then return end
-
-    -- Cargar datos persistentes
+    -- Init
     lib.loadRules()
     lib.loadHistory()
     tasks.load()
-
-    lib.tLog("Transfer v5.0 iniciado")
-    lib.tLog("Monitor: " .. lib.MONITOR_SIDE .. " (" .. lib.W .. "x" .. lib.H .. ")")
-
     lib.refreshInventories()
+
+    lib.tLog("Transfer v5.1 Multi-Monitor")
     lib.tLog("Inventarios: " .. #st.inventories)
     lib.tLog("Reglas: " .. #st.rules)
     lib.tLog("Tareas: " .. tasks.count())
 
+    -- Init monitors
+    ui.init()
+
     -- Render inicial
-    ui.render()
+    ui.renderAll()
     lib.drawTerminal()
+
+    lib.tLog("Sistema listo. Monitores activos.")
 
     -- Loops en paralelo
     parallel.waitForAny(
-        monitorLoop,
+        touchLoop,
+        refreshLoop,
         rulesLoop,
         tasks.loop,
         worker.loop,
-        terminalLoop
+        terminalLoop,
+        workerEventLoop,
+        logEventLoop
     )
 
     -- Cleanup
-    lib.mClear(colors.black)
-    lib.mWrite(2, 2, "Transfer cerrado", colors.gray, colors.black)
+    for _, m in pairs(ui.monitors) do
+        m:clear(colors.black)
+        m:write(2, 2, "Transfer cerrado", colors.gray, colors.black)
+    end
     term.clear()
     term.setCursorPos(1, 1)
     print("Transfer cerrado.")
@@ -123,9 +151,11 @@ end
 local ok, err = pcall(main)
 if not ok then
     print("Error: " .. tostring(err))
-    if lib.mon then
-        lib.mClear(colors.black)
-        lib.mWrite(2, 2, "ERROR:", colors.red, colors.black)
-        lib.mWrite(2, 3, tostring(err):sub(1, (lib.W > 0 and lib.W - 2 or 50)), colors.white, colors.black)
+    for _, m in pairs(ui.monitors or {}) do
+        pcall(function()
+            m:clear(colors.black)
+            m:write(2, 2, "ERROR:", colors.red, colors.black)
+            m:write(2, 3, tostring(err):sub(1, 40), colors.white, colors.black)
+        end)
     end
 end

@@ -1,41 +1,42 @@
--- install.lua  v5.1
--- Descarga todos los archivos de transfer desde GitHub
--- Uso: wget run https://raw.githubusercontent.com/SebasRamz-Murillo/transfer_craftos/main/install.lua
+-- ============================================================
+--  install.lua  v5.1
+--  Descarga todos los archivos de Transfer v5.1
+--  Uso: wget run https://raw.githubusercontent.com/SebasRamz-Murillo/transfer_craftos/main/install.lua
+-- ============================================================
 
-local repo = "https://raw.githubusercontent.com/SebasRamz-Murillo/transfer_craftos/main/"
+local REPO = "https://raw.githubusercontent.com/SebasRamz-Murillo/transfer_craftos/main/"
 
 local files = {
+    "transfer.lua",
     "transfer_lib.lua",
     "transfer_tasks.lua",
     "transfer_worker.lua",
     "transfer_ui.lua",
-    "transfer.lua",
 }
 
-print("=== Instalando Transfer v5.1 Multi-Monitor ===")
-print()
-print("Monitores: 14(CONTROL) 10(TAREAS) 13(INVENTARIO)")
-print("           12(DASHBOARD) 11(ACTIVIDAD)")
-print()
+print("=== Transfer v5.1 Installer ===")
+print("")
 
-local ok_count = 0
-for _, name in ipairs(files) do
-    write("  " .. name .. " ... ")
-    if fs.exists(name) then fs.delete(name) end
-    local ok = pcall(function() shell.run("wget", repo .. name, name) end)
-    if ok and fs.exists(name) then
-        print("OK")
-        ok_count = ok_count + 1
+for _, file in ipairs(files) do
+    local url = REPO .. file
+    print("Descargando: " .. file)
+    if fs.exists(file) then fs.delete(file) end
+    local ok, err = pcall(shell.run, "wget", url, file)
+    if not ok then
+        print("  ERROR: " .. tostring(err))
     else
-        print("FALLO")
+        print("  OK")
     end
 end
 
-print()
-if ok_count == #files then
-    print("Listo! " .. ok_count .. "/" .. #files .. " archivos instalados.")
-    print("Ejecuta: transfer")
-else
-    print("ADVERTENCIA: " .. ok_count .. "/" .. #files .. " archivos.")
-    print("Verifica tu conexion HTTP.")
-end
+print("")
+print("=== Instalacion completa ===")
+print("")
+print("Monitores requeridos (wired modem):")
+print("  monitor_14 (3x3) = CONTROL")
+print("  monitor_10 (3x3) = AUTOMATIZAR")
+print("  monitor_13 (3x3) = INVENTARIO")
+print("  monitor_12 (2x7) = DASHBOARD (techo)")
+print("  monitor_11 (2x7) = ACTIVIDAD (techo)")
+print("")
+print("Ejecuta: transfer")
