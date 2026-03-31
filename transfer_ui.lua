@@ -301,6 +301,196 @@ local function compQtySelector(ctx, title, maxQty, allowZero, onConfirm)
     end)
 end
 
+-- ============================================================
+--  Help pages (shared component)
+-- ============================================================
+
+local HELP_PAGES = {
+    control = {
+        { title = "CONTROL", lines = {
+            "Este monitor maneja",
+            "operaciones manuales.",
+            "",
+            "TRANSFER: Mueve un item",
+            "de un inv a otro.",
+            "Selecciona origen, item,",
+            "cantidad y destino.",
+            "",
+            "EMPTY: Vacia todo un",
+            "inventario a otro.",
+        }},
+        { title = "CONTROL 2", lines = {
+            "WORKER: Vaciado continuo",
+            "y automatico. Repite cada",
+            "N segundos. Util para",
+            "granjas o maquinas.",
+            "",
+            "GROUP: Consolida items.",
+            "Mueve cada tipo de item",
+            "al inv que ya tiene mas",
+            "de ese tipo. Organiza",
+            "tu almacen.",
+        }},
+        { title = "CONTROL 3", lines = {
+            "UNDO: Despues de transfer",
+            "o empty, puedes revertir",
+            "la operacion con el boton",
+            "UNDO en la pantalla de",
+            "resultado.",
+            "",
+            "REFRESH: Actualiza la",
+            "lista de inventarios",
+            "conectados a la red.",
+        }},
+    },
+    tasks = {
+        { title = "AUTOMATIZAR", lines = {
+            "Automatiza movimientos",
+            "de items con tareas y",
+            "reglas periodicas.",
+            "",
+            "TASKS: Tareas con mas",
+            "opciones. Loop o 1 vez,",
+            "intervalo, nombre, y",
+            "programacion por hora.",
+        }},
+        { title = "TASKS: Tipos", lines = {
+            "TRANSFERIR: Mueve un item",
+            "especifico entre dos inv.",
+            "",
+            "VACIAR: Mueve todo el",
+            "contenido de un inv.",
+            "",
+            "RECOLECTAR: Busca un item",
+            "en TODOS los inv y lo",
+            "lleva a un destino.",
+        }},
+        { title = "MULTI SELECT", lines = {
+            "MULTI ITEMS: Selecciona",
+            "varios items de un inv.",
+            "Crea una tarea por cada",
+            "item seleccionado.",
+            "",
+            "Toca items para marcar/",
+            "desmarcar. Luego elige",
+            "destino y configuracion.",
+        }},
+        { title = "RULES", lines = {
+            "RULES: Reglas simples.",
+            "Mueve items cada N segs.",
+            "ON/OFF global con boton.",
+            "",
+            "Soporta patrones glob:",
+            "  *ore* = cualquier mena",
+            "  *ingot* = cualquier",
+            "  lingote",
+        }},
+        { title = "ALERTS", lines = {
+            "ALERTS: Monitorea stock.",
+            "Alerta cuando un item",
+            "sube o baja de un umbral.",
+            "",
+            "Puede activar redstone",
+            "en un lado del computer.",
+            "Util para saber cuando",
+            "falta material.",
+        }},
+        { title = "SCHEDULE", lines = {
+            "Las tareas pueden tener",
+            "un horario de Minecraft.",
+            "",
+            "SET SCHEDULE en la config",
+            "de tarea. Ejemplo: 6.0",
+            "= amanecer, 18.0 = noche",
+            "",
+            "Se ejecuta 1 vez por dia",
+            "de juego al pasar la hora",
+        }},
+        { title = "PATTERNS", lines = {
+            "Usa patrones con * para",
+            "coincidir multiples items",
+            "",
+            "Ejemplos:",
+            "  *ore*    -> iron_ore,",
+            "             gold_ore...",
+            "  *ingot*  -> iron_ingot",
+            "  *diamond*-> todo con",
+            "             diamond",
+        }},
+    },
+    browse = {
+        { title = "INVENTARIO", lines = {
+            "Explora y administra",
+            "tus inventarios.",
+            "",
+            "BROWSE: Ve el contenido",
+            "de cada inventario.",
+            "",
+            "FIND: Busca un item en",
+            "TODOS los inventarios",
+            "conectados a la red.",
+        }},
+        { title = "INVENTARIO 2", lines = {
+            "HISTORY: Historial de",
+            "transferencias. Puedes",
+            "deshacer con el boton <-",
+            "",
+            "RENAME: Nombra tus inv",
+            "con nombres amigables.",
+            "Se muestra en todas las",
+            "pantallas.",
+        }},
+        { title = "INVENTARIO 3", lines = {
+            "LABELS: Pinta monitores",
+            "externos con el nombre",
+            "de un inventario y un",
+            "color. Decorativo!",
+            "",
+            "SETTINGS:",
+            "  Compact: 1 linea/item",
+            "  Favorites: Marca inv",
+            "  para que aparezcan",
+            "  primero en las listas.",
+        }},
+    },
+}
+
+local function compHelp(ctx, monKey)
+    local pages = HELP_PAGES[monKey]
+    if not pages then return end
+    local n = ctx.nav
+    local pageIdx = n._helpPage or 1
+    if pageIdx > #pages then pageIdx = #pages end
+    local page = pages[pageIdx]
+    ctx:header("? " .. page.title)
+    local y = 3
+    for _, line in ipairs(page.lines) do
+        if y >= ctx.H - 2 then break end
+        local col = colors.white
+        if line == "" then col = colors.black
+        elseif line:sub(1, 2) == "  " then col = colors.yellow
+        end
+        ctx:write(2, y, line, col, colors.black)
+        y = y + 1
+    end
+    -- Pagination
+    local by = ctx.H - 1
+    if #pages > 1 then
+        if pageIdx > 1 then
+            ctx:btn(2, by, 6, 1, "< ANT", colors.white, colors.cyan, function()
+                n._helpPage = pageIdx - 1
+            end)
+        end
+        ctx:write(math.floor(ctx.W / 2) - 2, by, pageIdx .. "/" .. #pages, colors.gray, colors.black)
+        if pageIdx < #pages then
+            ctx:btn(ctx.W - 6, by, 6, 1, "SIG >", colors.white, colors.cyan, function()
+                n._helpPage = pageIdx + 1
+            end)
+        end
+    end
+    ctx:footer("Tap < para volver")
+end
+
 -- Helper: format elapsed time
 local function fmtElapsed(secs)
     if secs < 60 then return math.floor(secs) .. "s"
@@ -319,6 +509,10 @@ local scr14 = {}
 
 function scr14.menu(ctx)
     ctx:header("Menu")
+    -- Help button on header
+    ctx:btn(ctx.W - 8, 1, 3, 1, "?", colors.yellow, colors.blue, function()
+        ctx.nav._helpPage = 1; ctx:goTo("help")
+    end)
     local y = 2
     local hw = math.floor((ctx.W - 3) / 2)
     ctx:btn(2, y, hw, 2, "TRANSFER", colors.white, colors.green, function()
@@ -358,6 +552,9 @@ function scr14.menu(ctx)
         ctx:footer("Inv: " .. #st.inventories)
     end
 end
+
+-- Help
+function scr14.help(ctx) compHelp(ctx, "control") end
 
 -- Transfer flow
 function scr14.xfer_from(ctx)
@@ -783,6 +980,10 @@ local scr10 = {}
 
 function scr10.menu(ctx)
     ctx:header("Auto")
+    -- Help button on header
+    ctx:btn(ctx.W - 8, 1, 3, 1, "?", colors.yellow, colors.blue, function()
+        ctx.nav._helpPage = 1; ctx:goTo("help")
+    end)
     local tstats = tasks.countEnabled() .. "/" .. tasks.count()
     local rstats = #st.rules
     local astats = alerts.count()
@@ -890,6 +1091,9 @@ function scr10.confirm_delete(ctx)
     end)
 end
 
+-- Help
+function scr10.help(ctx) compHelp(ctx, "tasks") end
+
 -- Task creation flow
 function scr10.task_type(ctx)
     ctx:header("Tarea: Tipo")
@@ -902,6 +1106,11 @@ function scr10.task_type(ctx)
     end); y = y + 3
     ctx:btn(3, y, ctx.W - 4, 2, "RECOLECTAR ITEM", colors.white, colors.cyan, function()
         ctx.nav._taskType = "collect"; ctx:goTo("collect_item")
+    end); y = y + 3
+    ctx:btn(3, y, ctx.W - 4, 2, "MULTI ITEMS", colors.black, colors.lime, function()
+        ctx.nav._multiSelected = {}
+        lib.refreshInventories()
+        ctx:goTo("multi_from")
     end)
 end
 
@@ -1195,6 +1404,199 @@ function scr10.collect_to(ctx)
         ctx.nav.toInv = inv
         ctx.nav.fromInv = { name = "*", size = 0 }
         ctx:goTo("task_config")
+    end)
+end
+
+-- ============================================================
+-- Multi-item selection flow
+-- ============================================================
+
+-- Step 1: Pick source inventory
+function scr10.multi_from(ctx)
+    compSelectInv(ctx, "Multi: Origen", function(inv)
+        ctx.nav.fromInv = inv
+        ctx.nav.items = lib.getItems(inv)
+        ctx.nav.searchText = ""; lib.applyFilter(ctx.nav)
+        ctx.nav._multiSelected = {}
+        ctx:goTo("multi_items")
+    end)
+end
+
+-- Step 2: Toggle-select multiple items
+function scr10.multi_items(ctx)
+    ctx:header("Multi: Items")
+    local n = ctx.nav
+    local sel = n._multiSelected or {}
+    local selCount = 0
+    for _ in pairs(sel) do selCount = selCount + 1 end
+
+    -- Search button
+    if n.searchText ~= "" then
+        ctx:write(2, 2, "Filt:" .. n.searchText, colors.yellow, colors.black)
+    end
+    ctx:btn(ctx.W - 8, 2, 8, 1, "BUSCAR", colors.white, colors.orange, function()
+        n.screen = "multi_items_search"
+    end)
+
+    local di = n.filteredItems
+    if #di == 0 then
+        ctx:write(2, 4, n.searchText ~= "" and "Sin res." or "Vacio", colors.orange, colors.black)
+        return
+    end
+    local pp = n.perPage
+    local si = (n.page - 1) * pp + 1
+    local ei = math.min(n.page * pp, #di)
+    local y = 3
+    for i = si, ei do
+        local item = di[i]
+        local isSelected = sel[item.name] ~= nil
+        local sname = item.name:match(":(.+)") or item.name
+        if #sname > ctx.W - 10 then sname = sname:sub(1, ctx.W - 12) .. ".." end
+        local bg = isSelected and colors.green or ((i % 2 == 0) and colors.blue or colors.gray)
+        local fg = isSelected and colors.white or colors.white
+        local mark = isSelected and "[X] " or "[ ] "
+        ctx:btn(2, y, ctx.W - 2, 2, "", fg, bg, function()
+            if sel[item.name] then
+                sel[item.name] = nil
+            else
+                sel[item.name] = { name = item.name, total = item.total }
+            end
+        end)
+        ctx:write(3, y, mark .. sname, fg, bg)
+        ctx:write(ctx.W - #tostring(item.total) - 2, y + 1, "x" .. item.total, colors.yellow, bg)
+        y = y + 3
+    end
+    ctx:paginate(#di)
+
+    -- Bottom: SELECT ALL / NEXT
+    local by = ctx.H
+    if selCount > 0 then
+        local hw = math.floor((ctx.W - 3) / 2)
+        ctx:btn(2, by, hw, 1, "ALL(" .. #di .. ")", colors.white, colors.purple, function()
+            for _, item in ipairs(di) do
+                sel[item.name] = { name = item.name, total = item.total }
+            end
+        end)
+        ctx:btn(2 + hw + 1, by, hw, 1, selCount .. " NEXT>", colors.black, colors.lime, function()
+            lib.refreshInventories()
+            ctx:goTo("multi_to")
+        end)
+    else
+        ctx:btn(2, by, ctx.W - 2, 1, "SELECT ALL", colors.white, colors.purple, function()
+            for _, item in ipairs(di) do
+                sel[item.name] = { name = item.name, total = item.total }
+            end
+        end)
+    end
+end
+
+function scr10.multi_items_search(ctx)
+    ctx:header("Buscar Item")
+    local n = ctx.nav; local y = 4
+    for i = 1, math.min(3, #n.filteredItems) do
+        ctx:write(3, y, sn(n.filteredItems[i].name) .. " x" .. n.filteredItems[i].total, colors.lightGray, colors.black)
+        y = y + 1
+    end
+    compKeyboard(ctx, function() n.screen = "multi_items" end)
+end
+
+-- Step 3: Pick destination
+function scr10.multi_to(ctx)
+    compSelectInv(ctx, "Multi: Destino", function(inv)
+        ctx.nav.toInv = inv
+        ctx:goTo("multi_config")
+    end, ctx.nav.fromInv and ctx.nav.fromInv.name)
+end
+
+-- Step 4: Configure and create tasks
+function scr10.multi_config(ctx)
+    ctx:header("Multi: Config")
+    local n = ctx.nav
+    local sel = n._multiSelected or {}
+    local selCount = 0
+    for _ in pairs(sel) do selCount = selCount + 1 end
+
+    local y = 2
+    ctx:write(2, y, selCount .. " items seleccionados", colors.white, colors.black)
+    y = y + 1
+    ctx:write(2, y, "De: " .. lib.getAlias(n.fromInv.name):sub(1, ctx.W - 6), colors.lime, colors.black)
+    y = y + 1
+    ctx:write(2, y, "A:  " .. lib.getAlias(n.toInv.name):sub(1, ctx.W - 6), colors.cyan, colors.black)
+    y = y + 2
+
+    -- Loop / 1x
+    ctx:btn(2, y, math.floor(ctx.W / 2) - 1, 1, "LOOP", colors.white, n._taskLoop and colors.green or colors.gray, function() n._taskLoop = true end)
+    ctx:btn(math.floor(ctx.W / 2) + 1, y, math.floor(ctx.W / 2) - 1, 1, "1X", colors.white, (not n._taskLoop) and colors.green or colors.gray, function() n._taskLoop = false end)
+    y = y + 2
+
+    if n._taskLoop then
+        ctx:write(2, y, "Ival:", colors.lightGray, colors.black); y = y + 1
+        local ints = { 5, 10, 30, 60 }
+        local bw = math.floor((ctx.W - 2) / 4)
+        for idx, val in ipairs(ints) do
+            local bx = 2 + (idx - 1) * bw
+            ctx:btn(bx, y, bw - 1, 1, tostring(val), colors.white, n._taskInterval == val and colors.green or colors.blue, function()
+                n._taskInterval = val
+            end)
+        end
+        y = y + 2
+    end
+
+    -- Show selected items preview
+    ctx:write(2, y, "Items:", colors.gray, colors.black); y = y + 1
+    local count = 0
+    for name, data in pairs(sel) do
+        if y >= ctx.H - 3 then
+            ctx:write(2, y, "+" .. (selCount - count) .. " mas...", colors.gray, colors.black)
+            break
+        end
+        ctx:write(3, y, sn(name):sub(1, ctx.W - 4), colors.lightGray, colors.black)
+        y = y + 1
+        count = count + 1
+    end
+
+    -- Create button
+    ctx:btn(2, ctx.H - 2, ctx.W - 2, 2, "CREAR " .. selCount .. " TAREAS", colors.black, colors.lime, function()
+        local created = 0
+        for name, data in pairs(sel) do
+            local shortItem = sn(name):sub(1, 6)
+            tasks.create({
+                name     = shortItem .. ">" .. lib.getAlias(n.toInv.name):sub(1, 6),
+                type     = "transfer",
+                from     = n.fromInv.name,
+                to       = n.toInv.name,
+                item     = name,
+                cantidad = 0,
+                interval = n._taskInterval or 10,
+                loop     = n._taskLoop ~= false,
+            })
+            created = created + 1
+        end
+        lib.tLog("[MULTI] " .. created .. " tareas creadas")
+        n.screen = "multi_result"; n.history = {}
+        n._multiCreated = created
+    end)
+end
+
+-- Step 5: Result
+function scr10.multi_result(ctx)
+    ctx:header("Multi: Listo")
+    local n = ctx.nav
+    local y = 3
+    ctx:fill(2, y, ctx.W - 2, 2, colors.green)
+    ctx:write(3, y, (n._multiCreated or 0) .. " tareas creadas!", colors.white, colors.green)
+    y = y + 3
+    ctx:write(2, y, "Las tareas se ejecutan", colors.lightGray, colors.black); y = y + 1
+    ctx:write(2, y, "automaticamente segun", colors.lightGray, colors.black); y = y + 1
+    ctx:write(2, y, "su configuracion.", colors.lightGray, colors.black)
+
+    ctx:btn(2, ctx.H - 4, ctx.W - 2, 1, "VER TAREAS", colors.white, colors.blue, function()
+        n.screen = "tasks_list"; n.history = {}; n.page = 1
+        n._multiSelected = nil; n._multiCreated = nil
+    end)
+    ctx:btn(2, ctx.H - 2, ctx.W - 2, 2, "MENU", colors.white, colors.gray, function()
+        n.screen = "menu"; n.history = {}
+        n._multiSelected = nil; n._multiCreated = nil
     end)
 end
 
@@ -1520,8 +1922,15 @@ end
 -- ============================================================
 local scr13 = {}
 
+-- Help
+function scr13.help(ctx) compHelp(ctx, "browse") end
+
 function scr13.menu(ctx)
     ctx:header("Inv")
+    -- Help button on header
+    ctx:btn(ctx.W - 8, 1, 3, 1, "?", colors.yellow, colors.blue, function()
+        ctx.nav._helpPage = 1; ctx:goTo("help")
+    end)
     local y = 2
     local hw = math.floor((ctx.W - 3) / 2)
     ctx:btn(2, y, hw, 2, "BROWSE", colors.white, colors.cyan, function()
