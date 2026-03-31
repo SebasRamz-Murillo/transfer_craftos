@@ -37,7 +37,7 @@ local function newCtx(monPeriph, monName, label, scale)
     ctx.nav = {
         screen       = "menu",
         page         = 1,
-        perPage      = math.max(1, math.floor((ctx.H - 6) / 2)),
+        perPage      = math.max(1, math.floor((ctx.H - 3) / 3)),
         fromInv      = nil,
         toInv        = nil,
         selectedItem = nil,
@@ -771,13 +771,15 @@ function scr10.tasks_list(ctx)
         if t.status == "running" then sc = colors.yellow
         elseif t.status == "done" then sc = colors.lime
         elseif t.status == "error" then sc = colors.red end
-        local tp = t.type == "drain" and "E" or "M"
+        local tp = t.type == "drain" and "E" or (t.type == "collect" and "C" or "M")
         local lp = t.loop and ("c/" .. t.interval .. "s") or "1x"
         local nm = t.name
         if #nm > ctx.W - 16 then nm = nm:sub(1, ctx.W - 18) .. ".." end
         ctx:fill(2, y, ctx.W - 11, 2, bg)
         ctx:write(3, y, nm, colors.white, bg)
-        ctx:write(3, y + 1, tp .. "|" .. lp .. "|" .. t.status:sub(1, 1), sc, bg)
+        local fromDisp = t.from == "*" and "ALL" or lib.getAlias(t.from):sub(1, 6)
+        local route = fromDisp .. ">" .. lib.getAlias(t.to):sub(1, 6)
+        ctx:write(3, y + 1, tp .. "|" .. lp .. " " .. route, sc, bg)
         local bw = 4
         ctx:btn(ctx.W - 10, y, bw, 2, t.enabled and "ON" or "OF", colors.white, t.enabled and colors.green or colors.red, function()
             tasks.toggle(idx)
@@ -800,6 +802,9 @@ function scr10.task_type(ctx)
     end); y = y + 3
     ctx:btn(3, y, ctx.W - 4, 2, "VACIAR INVENTARIO", colors.white, colors.orange, function()
         ctx.nav._taskType = "drain"; ctx:goTo("task_from")
+    end); y = y + 3
+    ctx:btn(3, y, ctx.W - 4, 2, "RECOLECTAR ITEM", colors.white, colors.cyan, function()
+        ctx.nav._taskType = "collect"; ctx:goTo("collect_item")
     end)
 end
 
@@ -848,11 +853,22 @@ end
 function scr10.task_config(ctx)
     ctx:header("Config")
     local n = ctx.nav; local y = 2
-    local tp = n._taskType == "drain" and "E" or "M"
-    local it = n._taskType == "drain" and "all" or (n.selectedItem and sn(n.selectedItem.name) or "?")
+    local tp = n._taskType == "drain" and "E" or (n._taskType == "collect" and "C" or "M")
+    local it = (n._taskType == "drain") and "all" or (n.selectedItem and sn(n.selectedItem.name) or "?")
     if #it > ctx.W - 6 then it = it:sub(1, ctx.W - 8) .. ".." end
     ctx:fill(2, y, ctx.W - 2, 1, colors.gray)
     ctx:write(3, y, tp .. ":" .. it, colors.white, colors.gray)
+    y = y + 1
+    -- Show auto-generated name, allow editing
+    local autoName = n._taskName or (sn(n._taskType == "drain" and "*" or (n.selectedItem and n.selectedItem.name or "*")):sub(1, 8) .. ">" .. lib.getAlias(n.toInv.name):sub(1, 8))
+    if not n._taskName then n._taskName = autoName end
+    local dispName = n._taskName
+    if #dispName > ctx.W - 6 then dispName = dispName:sub(1, ctx.W - 8) .. ".." end
+    ctx:write(2, y, "Name: " .. dispName, colors.yellow, colors.black)
+    ctx:btn(ctx.W - 7, y, 7, 1, "EDIT", colors.white, colors.orange, function()
+        n.searchText = n._taskName or ""
+        ctx:goTo("task_name")
+    end)
     y = y + 2
     ctx:btn(2, y, math.floor(ctx.W / 2) - 1, 1, "LOOP", colors.white, n._taskLoop and colors.green or colors.gray, function() n._taskLoop = true end)
     ctx:btn(math.floor(ctx.W / 2) + 1, y, math.floor(ctx.W / 2) - 1, 1, "1X", colors.white, (not n._taskLoop) and colors.green or colors.gray, function() n._taskLoop = false end)
@@ -871,17 +887,105 @@ function scr10.task_config(ctx)
     end
     ctx:btn(2, y, ctx.W - 2, 1, "CREATE", colors.black, colors.lime, function()
         local iname = n._taskType == "drain" and "*" or (n.selectedItem and n.selectedItem.name or "*")
+        local fromName = n._taskType == "collect" and "*" or n.fromInv.name
         tasks.create({
-            name     = sn(iname):sub(1, 8) .. ">" .. lib.shortName(n.toInv.name):sub(1, 8),
+            name     = n._taskName or (sn(iname):sub(1, 8) .. ">" .. lib.getAlias(n.toInv.name):sub(1, 8)),
             type     = n._taskType,
-            from     = n.fromInv.name,
+            from     = fromName,
             to       = n.toInv.name,
             item     = iname,
             cantidad = n._taskType == "drain" and 0 or (n.cantidad or 0),
             interval = n._taskInterval or 10,
             loop     = n._taskLoop ~= false,
         })
-        n.screen = "tasks_list"; n.history = {}; n.fromInv = nil; n.toInv = nil; n.selectedItem = nil; n.page = 1
+        n.screen = "tasks_list"; n.history = {}; n.fromInv = nil; n.toInv = nil
+        n.selectedItem = nil; n.page = 1; n._taskName = nil
+    end)
+end
+
+-- Task name editor
+function scr10.task_name(ctx)
+    ctx:header("Nombre")
+    local n = ctx.nav
+    compKeyboard(ctx, function()
+        n._taskName = n.searchText ~= "" and n.searchText or nil
+        n.searchText = ""
+        ctx:goBack()
+    end)
+end
+
+-- Collect flow: pick item from all inventories, then pick destination
+function scr10.collect_item(ctx)
+    ctx:header("Recolectar: Item")
+    local n = ctx.nav
+    -- Build global item list across all inventories
+    if not n._collectScanned then
+        local map = {}
+        for _, inv in ipairs(st.inventories) do
+            local items = lib.getItems(inv)
+            for _, item in ipairs(items) do
+                if not map[item.name] then
+                    map[item.name] = { name = item.name, total = 0 }
+                end
+                map[item.name].total = map[item.name].total + item.total
+            end
+        end
+        local all = {}
+        for _, v in pairs(map) do table.insert(all, v) end
+        table.sort(all, function(a, b) return a.name < b.name end)
+        n.items = all; n.searchText = ""; lib.applyFilter(n)
+        n._collectScanned = true
+    end
+    -- Search button
+    if n.searchText ~= "" then
+        ctx:write(2, 2, "Filt:" .. n.searchText, colors.yellow, colors.black)
+    end
+    ctx:btn(ctx.W - 8, 2, 8, 1, "BUSCAR", colors.white, colors.orange, function()
+        n.screen = "collect_item_search"
+    end)
+    local di = n.filteredItems
+    if #di == 0 then
+        ctx:write(2, 4, n.searchText ~= "" and "Sin res." or "Vacio", colors.orange, colors.black)
+        return
+    end
+    local pp = n.perPage
+    local si2 = (n.page - 1) * pp + 1
+    local ei = math.min(n.page * pp, #di)
+    local y = 3
+    for i = si2, ei do
+        local item = di[i]
+        local name = sn(item.name)
+        if #name > ctx.W - 8 then name = name:sub(1, ctx.W - 10) .. ".." end
+        local bg = (i % 2 == 0) and colors.blue or colors.gray
+        ctx:btn(2, y, ctx.W - 2, 2, "", colors.white, bg, function()
+            n.selectedItem = item
+            n.cantidad = 0
+            n._collectScanned = nil
+            ctx:goTo("collect_to")
+        end)
+        ctx:write(4, y, name .. " x" .. item.total, colors.white, bg)
+        y = y + 3
+    end
+    ctx:paginate(#di)
+    ctx:footer(#di .. " items en red")
+end
+
+function scr10.collect_item_search(ctx)
+    ctx:header("Buscar Item")
+    local n = ctx.nav; local y = 4
+    for i = 1, math.min(3, #n.filteredItems) do
+        ctx:write(3, y, sn(n.filteredItems[i].name) .. " x" .. n.filteredItems[i].total, colors.lightGray, colors.black)
+        y = y + 1
+    end
+    compKeyboard(ctx, function() n.screen = "collect_item" end)
+end
+
+function scr10.collect_to(ctx)
+    compSelectInv(ctx, "Recolectar: Destino", function(inv)
+        ctx.nav.toInv = inv
+        -- For collect, fromInv is a placeholder (searches all)
+        ctx.nav.fromInv = { name = "*", size = 0 }
+        ctx:goTo("task_config")
     end)
 end
 
@@ -1129,7 +1233,8 @@ function scr13.history(ctx)
         local bg = (i % 2 == 0) and colors.gray or colors.black
         ctx:fill(2, y, ctx.W - 2, 2, bg)
         ctx:write(3, y, si2 .. " " .. h.moved .. "x", colors.white, bg)
-        local route = lib.shortName(h.from):sub(1, 8) .. ">" .. lib.shortName(h.to):sub(1, 8)
+        local fromH = h.from == "*" and "ALL" or lib.shortName(h.from):sub(1, 8)
+        local route = fromH .. ">" .. lib.shortName(h.to):sub(1, 8)
         ctx:write(3, y + 1, h.time .. " " .. route, ok and colors.lime or colors.orange, bg)
         y = y + 3
     end

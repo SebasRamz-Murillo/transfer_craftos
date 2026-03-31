@@ -96,7 +96,42 @@ function tasks.countEnabled()
     return n
 end
 
+-- Collect: search all inventories (except dest) for an item and move to dest
+function tasks.executeCollect(t)
+    t.status = "running"
+    local moved = 0
+    local qty = t.cantidad == 0 and lib.MAX_QUANTITY or t.cantidad
+    for _, inv in ipairs(lib.state.inventories) do
+        if inv.name ~= t.to then
+            local m = lib.moveItems(inv.peripheral, t.to, t.item, qty - moved)
+            moved = moved + m
+            if moved >= qty then break end
+        end
+    end
+    return moved
+end
+
 function tasks.execute(t)
+    -- Collect type searches all inventories
+    if t.type == "collect" then
+        local moved = tasks.executeCollect(t)
+        t.lastRun = os.clock()
+        t.lastResult = { moved = moved }
+        if moved > 0 then
+            t.status = "done"
+            local si = t.item:match(":(.+)") or t.item
+            lib.tLog("[TASK] " .. t.name .. ": " .. moved .. "x " .. si .. " (collect)")
+            lib.addHistory("*", t.to, t.item, t.cantidad, moved)
+        else
+            t.status = "idle"
+        end
+        if not t.loop and moved > 0 then
+            t.enabled = false; tasks.save()
+        end
+        return moved
+    end
+
+    -- Normal transfer/drain
     local fromP = peripheral.wrap(t.from)
     if not fromP or not fromP.list then
         t.status = "error"
