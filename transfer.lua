@@ -108,7 +108,7 @@ end
 -- Action loop for deferred execution (heavy I/O outside render path)
 local function actionLoop()
     while st.running do
-        sleep(0.1)
+        os.pullEvent("pending_action")
         if ui.pendingAction then
             ui.processPending()
             -- Re-render control monitor after action completes

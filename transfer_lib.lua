@@ -455,6 +455,15 @@ function lib.getExtraMonitors()
     return result
 end
 
+-- Returns black for light backgrounds, white for dark
+function lib.contrastFg(bg)
+    if bg == colors.white or bg == colors.yellow or bg == colors.lime
+       or bg == colors.lightGray or bg == colors.lightBlue or bg == colors.pink then
+        return colors.black
+    end
+    return colors.white
+end
+
 function lib.paintMonitor(label)
     local mon = peripheral.wrap(label.monitor)
     if not mon then return false end
@@ -463,12 +472,7 @@ function lib.paintMonitor(label)
     mon.setBackgroundColor(col)
     mon.clear()
     local w, h = mon.getSize()
-    -- Determine text color for readability
-    local fg = colors.white
-    if col == colors.white or col == colors.yellow or col == colors.lime
-       or col == colors.lightGray or col == colors.lightBlue or col == colors.pink then
-        fg = colors.black
-    end
+    local fg = lib.contrastFg(col)
     -- Show inventory name/alias
     local invName = label.inventory or "?"
     local display = lib.getAlias(invName)

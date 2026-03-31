@@ -14,6 +14,11 @@ local st = lib.state
 -- Pending action for deferred execution
 ui.pendingAction = nil
 
+function ui.queueAction(action)
+    ui.pendingAction = action
+    os.queueEvent("pending_action")
+end
+
 -- ============================================================
 --  Monitor Context: cada monitor tiene su propio contexto
 -- ============================================================
@@ -177,7 +182,10 @@ local function compSelectInv(ctx, title, onSelect, filterOut)
             onSelect(inv)
         end)
         ctx:write(4, y, name, fg, bg)
-        ctx:write(ctx.W - 7, y, inv.size .. "sl", colors.lightGray, bg)
+        local used, total = lib.getInventoryFill(inv)
+        local pct = total > 0 and math.floor(used / total * 100) or 0
+        local fillCol = pct > 90 and colors.red or (pct > 60 and colors.orange or colors.lightGray)
+        ctx:write(ctx.W - 8, y, pct .. "% " .. total .. "s", fillCol, bg)
         y = y + 3
     end
     ctx:paginate(#invs)
@@ -219,22 +227,24 @@ end
 local function compKeyboard(ctx, onConfirm)
     local n = ctx.nav
     local keys = { "A B C D E F G", "H I J K L M N", "O P Q R S T U", "V W X Y Z _", "1 2 3 4 5 6 7", "8 9 0" }
-    local y = ctx.H - 7
-    ctx:fill(2, y - 2, ctx.W - 2, 1, colors.gray)
+    -- Dynamic y: keys rows + 1 action row + 1 input display + 1 padding
+    local kbHeight = #keys + 3
+    local y = ctx.H - kbHeight
+    ctx:fill(2, y - 1, ctx.W - 2, 1, colors.gray)
     local disp = n.searchText == "" and "Buscar..." or n.searchText
     if #disp > ctx.W - 6 then disp = disp:sub(1, ctx.W - 9) .. ".." end
     ctx:write(3, y - 1, disp, n.searchText == "" and colors.lightGray or colors.yellow, colors.gray)
     for row, line in ipairs(keys) do
         local col = 2
         for char in line:gmatch("%S+") do
-            ctx:btn(col, y + (row - 1) * 1, 2, 1, char, colors.white, colors.blue, function()
+            ctx:btn(col, y + (row - 1), 2, 1, char, colors.white, colors.blue, function()
                 n.searchText = n.searchText .. char:lower()
                 lib.applyFilter(n)
             end)
             col = col + 3
         end
     end
-    local sy = y + #keys * 1
+    local sy = y + #keys
     local bw = math.floor((ctx.W - 4) / 3)
     ctx:btn(2, sy, bw, 1, "DEL", colors.white, colors.orange, function()
         if #n.searchText > 0 then n.searchText = n.searchText:sub(1, -2); lib.applyFilter(n) end
@@ -264,7 +274,7 @@ local function compQtySelector(ctx, title, maxQty, allowZero, onConfirm)
     ctx:btn(2 + bw, y, bw, 1, "-10", colors.white, colors.red, function() n.cantidad = math.max(lo, n.cantidad - 10) end)
     ctx:btn(2 + 2*bw, y, bw, 1, "-64", colors.white, colors.red, function() n.cantidad = math.max(lo, n.cantidad - 64) end)
     y = y + 2
-    local hi = maxQty > 0 and maxQty or 99999
+    local hi = maxQty > 0 and maxQty or lib.MAX_QUANTITY
     ctx:btn(2, y, bw, 1, "+1",  colors.white, colors.green, function() n.cantidad = math.min(hi, n.cantidad + 1) end)
     ctx:btn(2 + bw, y, bw, 1, "+10", colors.white, colors.green, function() n.cantidad = math.min(hi, n.cantidad + 10) end)
     ctx:btn(2 + 2*bw, y, bw, 1, "+64", colors.white, colors.green, function() n.cantidad = math.min(hi, n.cantidad + 64) end)
@@ -404,15 +414,14 @@ function scr14.xfer_exec(ctx)
     ctx:header("Running...")
     local n = ctx.nav
     ctx:write(2, 3, "Processing...", colors.yellow, colors.black)
-    -- Set pending action for deferred execution
-    ui.pendingAction = {
+    ui.queueAction({
         type = "xfer",
         ctx = ctx,
         fromInv = n.fromInv,
         toInv = n.toInv,
         selectedItem = n.selectedItem,
         cantidad = n.cantidad,
-    }
+    })
 end
 
 function scr14.xfer_result(ctx)
@@ -478,13 +487,12 @@ function scr14.bulk_exec(ctx)
     ctx:header("Running...")
     ctx:write(2, 2, "XFR...", colors.yellow, colors.black)
     local n = ctx.nav
-    -- Set pending action for deferred execution
-    ui.pendingAction = {
+    ui.queueAction({
         type = "bulk",
         ctx = ctx,
         fromInv = n.fromInv,
         toInv = n.toInv,
-    }
+    })
 end
 
 function scr14.bulk_result(ctx)
@@ -539,7 +547,7 @@ end
 function scr14.grp_exec(ctx)
     ctx:header("Grouping...")
     ctx:write(2, 3, "Scanning...", colors.yellow, colors.black)
-    ui.pendingAction = { type = "group", ctx = ctx }
+    ui.queueAction({ type = "group", ctx = ctx })
 end
 
 function scr14.grp_result(ctx)
@@ -730,7 +738,7 @@ function scr10.tasks_list(ctx)
         local idx = i  -- capture index for closures
         local t = st.tasks[i]
         local bg = t.enabled and colors.gray or colors.brown
-        local sc = colors.lightGray
+        local sc = colors.white
         if t.status == "running" then sc = colors.yellow
         elseif t.status == "done" then sc = colors.lime
         elseif t.status == "error" then sc = colors.red end
@@ -740,7 +748,7 @@ function scr10.tasks_list(ctx)
         if #nm > ctx.W - 16 then nm = nm:sub(1, ctx.W - 18) .. ".." end
         ctx:fill(2, y, ctx.W - 11, 2, bg)
         ctx:write(3, y, nm, colors.white, bg)
-        ctx:write(3, y + 1, tp .. "|" .. lp .. "|" .. t.status:sub(1, 1), colors.yellow, bg)
+        ctx:write(3, y + 1, tp .. "|" .. lp .. "|" .. t.status:sub(1, 1), sc, bg)
         local bw = 4
         ctx:btn(ctx.W - 10, y, bw, 2, t.enabled and "ON" or "OF", colors.white, t.enabled and colors.green or colors.red, function()
             tasks.toggle(idx)
@@ -835,7 +843,7 @@ function scr10.task_config(ctx)
     ctx:btn(2, y, ctx.W - 2, 1, "CREATE", colors.black, colors.lime, function()
         local iname = n._taskType == "drain" and "*" or (n.selectedItem and n.selectedItem.name or "*")
         tasks.create({
-            name     = sn(iname):sub(1, 8) .. ">" .. n.toInv.name:sub(1, 6),
+            name     = sn(iname):sub(1, 8) .. ">" .. lib.shortName(n.toInv.name):sub(1, 8),
             type     = n._taskType,
             from     = n.fromInv.name,
             to       = n.toInv.name,
@@ -862,15 +870,21 @@ function scr10.rules_list(ctx)
     end)
     if #st.rules == 0 then ctx:write(2, 4, "Empty", colors.gray, colors.black); return end
     local y = 4
-    for i, rule in ipairs(st.rules) do
+    local n = ctx.nav
+    local pp = n.perPage
+    local si = (n.page - 1) * pp + 1
+    local ei = math.min(n.page * pp, #st.rules)
+    for i = si, ei do
         if y + 2 > ctx.H - 2 then break end
         local idx = i  -- capture index for closures
+        local rule = st.rules[i]
         local si2 = rule.item == "*" and "ALL" or sn(rule.item)
         if #si2 > ctx.W - 14 then si2 = si2:sub(1, ctx.W - 16) .. ".." end
         local bg = rule.enabled and colors.gray or colors.brown
         ctx:fill(2, y, ctx.W - 10, 2, bg)
         ctx:write(3, y, si2, colors.white, bg)
-        ctx:write(3, y + 1, rule.interval .. "s", colors.yellow, bg)
+        local route = lib.shortName(rule.from):sub(1, 6) .. ">" .. lib.shortName(rule.to):sub(1, 6)
+        ctx:write(3, y + 1, rule.interval .. "s " .. route, colors.yellow, bg)
         ctx:btn(ctx.W - 9, y, 4, 2, rule.enabled and "ON" or "OF", colors.white, rule.enabled and colors.green or colors.red, function()
             st.rules[idx].enabled = not st.rules[idx].enabled; lib.saveRules()
         end)
@@ -881,6 +895,7 @@ function scr10.rules_list(ctx)
         end)
         y = y + 3
     end
+    ctx:paginate(#st.rules)
     ctx:footer(#st.rules .. " rules")
 end
 
@@ -927,8 +942,8 @@ end
 function scr10.rule_interval(ctx)
     ctx:header("Regla: Intervalo")
     local si2 = ctx.nav.selectedItem.name == "*" and "TODO" or sn(ctx.nav.selectedItem.name)
-    ctx:write(2, 3, si2 .. ": " .. ctx.nav.fromInv.name:sub(1, 12), colors.white, colors.black)
-    ctx:write(2, 4, "  -> " .. ctx.nav.toInv.name:sub(1, 12), colors.cyan, colors.black)
+    ctx:write(2, 3, si2 .. ": " .. lib.getAlias(ctx.nav.fromInv.name):sub(1, 12), colors.white, colors.black)
+    ctx:write(2, 4, "  -> " .. lib.getAlias(ctx.nav.toInv.name):sub(1, 12), colors.cyan, colors.black)
     local y = 6
     local ints = { 5, 10, 30, 60 }
     for _, secs in ipairs(ints) do
@@ -1085,7 +1100,8 @@ function scr13.history(ctx)
         local bg = (i % 2 == 0) and colors.gray or colors.black
         ctx:fill(2, y, ctx.W - 2, 2, bg)
         ctx:write(3, y, si2 .. " " .. h.moved .. "x", colors.white, bg)
-        ctx:write(3, y + 1, h.time .. (ok and " OK" or " P"), ok and colors.lime or colors.orange, bg)
+        local route = lib.shortName(h.from):sub(1, 8) .. ">" .. lib.shortName(h.to):sub(1, 8)
+        ctx:write(3, y + 1, h.time .. " " .. route, ok and colors.lime or colors.orange, bg)
         y = y + 3
     end
     ctx:paginate(#st.history)
@@ -1127,23 +1143,19 @@ function scr13.labels_menu(ctx)
     local ei = math.min(n.page * n.perPage, #st.labels)
     for i = si, ei do
         if y + 2 > ctx.H - 2 then break end
+        local idx = i  -- capture index for closures
         local lb = st.labels[i]
         local col = lb.color or colors.blue
         local invAlias = lib.getAlias(lb.inventory)
         if #invAlias > ctx.W - 12 then invAlias = invAlias:sub(1, ctx.W - 14) .. ".." end
         ctx:fill(2, y, ctx.W - 6, 2, col)
-        -- Text color for readability
-        local fg = colors.white
-        if col == colors.white or col == colors.yellow or col == colors.lime
-           or col == colors.lightGray or col == colors.lightBlue or col == colors.pink then
-            fg = colors.black
-        end
+        local fg = lib.contrastFg(col)
         ctx:write(3, y, invAlias, fg, col)
         local mn = lb.monitor
         if #mn > ctx.W - 8 then mn = mn:sub(1, ctx.W - 10) .. ".." end
         ctx:write(3, y + 1, mn, fg, col)
         ctx:btn(ctx.W - 4, y, 4, 2, "X", colors.white, colors.red, function()
-            lib.removeLabel(i)
+            lib.removeLabel(idx)
         end)
         y = y + 3
     end
@@ -1208,11 +1220,7 @@ function scr13.label_color(ctx)
         local bx = 2 + col2 * bw
         local by = y + row * 2
         if by + 1 > ctx.H - 2 then break end
-        local fg = colors.white
-        if entry.col == colors.white or entry.col == colors.yellow or entry.col == colors.lime
-           or entry.col == colors.lightGray or entry.col == colors.lightBlue or entry.col == colors.pink then
-            fg = colors.black
-        end
+        local fg = lib.contrastFg(entry.col)
         ctx:btn(bx, by, bw - 1, 2, entry.name:sub(1, bw - 2), fg, entry.col, function()
             lib.addLabel(n._selMon, n._selInv, entry.col)
             n.screen = "labels_menu"; n.history = {}; n.page = 1
@@ -1243,7 +1251,7 @@ function scr13.rename_list(ctx)
             n.searchText = alias or ""
             n.screen = "rename_kb"
         end)
-        local display = alias or inv.name
+        local display = alias or lib.shortName(inv.name)
         if #display > ctx.W - 4 then display = display:sub(1, ctx.W - 6) .. ".." end
         ctx:write(4, y, display, colors.white, bg)
         if alias then
@@ -1399,7 +1407,7 @@ function ui.processPending()
         local movido = lib.moveItems(action.fromInv.peripheral, action.toInv.name, action.selectedItem.name, action.cantidad)
         action.ctx.nav._moved = movido
         if movido > 0 then
-            lib.tLog("OK: " .. movido .. "x " .. sn(action.selectedItem.name) .. " -> " .. action.toInv.name)
+            lib.tLog("OK: " .. movido .. "x " .. sn(action.selectedItem.name) .. " -> " .. lib.getAlias(action.toInv.name))
         else
             lib.tLog("ERROR: No se movio " .. sn(action.selectedItem.name))
         end
@@ -1429,7 +1437,7 @@ function ui.processPending()
             ctx:footer("Wait...")
         end)
         action.ctx.nav.bulkResult = result
-        lib.tLog("OK: " .. action.fromInv.name .. " -> " .. result.total .. " items")
+        lib.tLog("OK: " .. lib.getAlias(action.fromInv.name) .. " -> " .. result.total .. " items")
         for _, item in ipairs(result.items) do
             if item.moved > 0 then lib.addHistory(action.fromInv.name, action.toInv.name, item.name, item.moved + item.failed, item.moved) end
         end
