@@ -44,6 +44,13 @@ lib.state = {
     },
     labels  = {},   -- { {monitor=str, inventory=str, color=num}, ... }
     aliases = {},   -- { [invName] = "friendly name", ... }
+    stats = {
+        movementLog = {},  -- { {time=os.clock(), item=str, count=N}, ... }
+        itemCounts  = {},  -- { [itemName] = totalMoved }
+    },
+    favorites    = {},     -- { [invName] = true, ... }
+    compactMode  = false,
+    disconnected = {},     -- { [invName] = true, ... }
 }
 
 -- ============================================================
@@ -87,6 +94,22 @@ function lib.drawTerminal()
 end
 
 -- ============================================================
+--  Pattern matching (glob -> Lua pattern)
+-- ============================================================
+
+function lib.isPattern(str)
+    return type(str) == "string" and str:find("%*") ~= nil and str ~= "*"
+end
+
+function lib.matchesPattern(itemName, pattern)
+    -- Convert glob pattern to Lua pattern: escape magic chars, then * -> .-
+    local luaPat = pattern:gsub("([%.%+%-%^%$%(%)%%])", "%%%1")
+    luaPat = luaPat:gsub("%*", ".*")
+    luaPat = "^" .. luaPat .. "$"
+    return itemName:match(luaPat) ~= nil
+end
+
+-- ============================================================
 --  Inventarios
 -- ============================================================
 
@@ -104,7 +127,12 @@ function lib.refreshInventories()
             end
         end
     end
-    table.sort(lib.state.inventories, function(a, b) return a.name < b.name end)
+    table.sort(lib.state.inventories, function(a, b)
+        local aFav = lib.state.favorites[a.name] and true or false
+        local bFav = lib.state.favorites[b.name] and true or false
+        if aFav ~= bFav then return aFav end
+        return a.name < b.name
+    end)
 end
 
 function lib.getItems(inv)
@@ -159,12 +187,18 @@ end
 --  Movimiento
 -- ============================================================
 
-function lib.moveItems(fromPeripheral, toName, itemName, cantidad)
+function lib.moveItems(fromPeripheral, toName, itemName, cantidad, usePattern)
     local ok, raw = pcall(fromPeripheral.list)
     if not ok or not raw then return 0 end
     local movido = 0
     for slot, item in pairs(raw) do
-        if item.name == itemName then
+        local match = false
+        if usePattern then
+            match = lib.matchesPattern(item.name, itemName)
+        else
+            match = (item.name == itemName)
+        end
+        if match then
             local mover = math.min(item.count, cantidad - movido)
             local okM, r = pcall(fromPeripheral.pushItems, toName, slot, mover)
             if okM and r and r > 0 then movido = movido + r end
@@ -313,11 +347,13 @@ function lib.addHistory(from, to, item, requested, moved)
         from = from, to = to, item = item,
         requested = requested, moved = moved,
         time = textutils.formatTime(os.time(), true), day = os.day(),
+        undoable = true,
     })
     if #lib.state.history > lib.MAX_HISTORY then table.remove(lib.state.history) end
     lib.saveHistory()
     lib.state.totalTransfers = lib.state.totalTransfers + 1
     lib.state.totalMoved = lib.state.totalMoved + moved
+    lib.recordMovement(item, moved)
 end
 
 -- ============================================================
@@ -349,6 +385,19 @@ function lib.executeRule(rule)
                 local okM, r = pcall(fromP.pushItems, rule.to, slot, qty)
                 if okM and r then total = total + r end
                 if rule.cantidad > 0 and total >= rule.cantidad then break end
+            end
+        end
+    elseif lib.isPattern(rule.item) then
+        -- Glob pattern matching (e.g. *ore*, *ingot*)
+        local ok2, items = pcall(fromP.list)
+        if ok2 and items then
+            for slot, item in pairs(items) do
+                if lib.matchesPattern(item.name, rule.item) then
+                    local qty = rule.cantidad == 0 and item.count or math.min(item.count, rule.cantidad - total)
+                    local okM, r = pcall(fromP.pushItems, rule.to, slot, qty)
+                    if okM and r then total = total + r end
+                    if rule.cantidad > 0 and total >= rule.cantidad then break end
+                end
             end
         end
     else
@@ -444,7 +493,12 @@ end
 -- ============================================================
 
 function lib.saveLabels()
-    local data = { labels = lib.state.labels, aliases = lib.state.aliases }
+    local data = {
+        labels      = lib.state.labels,
+        aliases     = lib.state.aliases,
+        favorites   = lib.state.favorites,
+        compactMode = lib.state.compactMode,
+    }
     lib.safeWrite(lib.LABELS_FILE, data)
 end
 
@@ -454,8 +508,10 @@ function lib.loadLabels()
         local d = textutils.unserialise(f.readAll())
         f.close()
         if d then
-            lib.state.labels = d.labels or {}
-            lib.state.aliases = d.aliases or {}
+            lib.state.labels      = d.labels or {}
+            lib.state.aliases     = d.aliases or {}
+            lib.state.favorites   = d.favorites or {}
+            lib.state.compactMode = d.compactMode or false
         end
     end
 end
@@ -570,6 +626,137 @@ function lib.setAlias(invName, alias)
             lib.paintMonitor(label)
         end
     end
+end
+
+-- ============================================================
+--  Enhanced stats (ephemeral, RAM only)
+-- ============================================================
+
+function lib.recordMovement(itemName, count)
+    if count <= 0 then return end
+    table.insert(lib.state.stats.movementLog, {
+        time = os.clock(), item = itemName, count = count,
+    })
+    lib.state.stats.itemCounts[itemName] = (lib.state.stats.itemCounts[itemName] or 0) + count
+    -- Trim old entries (keep last 10 minutes)
+    local cutoff = os.clock() - 600
+    while #lib.state.stats.movementLog > 0 and lib.state.stats.movementLog[1].time < cutoff do
+        table.remove(lib.state.stats.movementLog, 1)
+    end
+end
+
+function lib.getItemsPerMinute()
+    local now = os.clock()
+    local oneMinAgo = now - 60
+    local count = 0
+    for _, entry in ipairs(lib.state.stats.movementLog) do
+        if entry.time >= oneMinAgo then
+            count = count + entry.count
+        end
+    end
+    return count
+end
+
+function lib.getTopItems(n)
+    n = n or 5
+    local sorted = {}
+    for name, total in pairs(lib.state.stats.itemCounts) do
+        table.insert(sorted, { name = name, count = total })
+    end
+    table.sort(sorted, function(a, b) return a.count > b.count end)
+    local result = {}
+    for i = 1, math.min(n, #sorted) do
+        table.insert(result, sorted[i])
+    end
+    return result
+end
+
+-- ============================================================
+--  Favorites
+-- ============================================================
+
+function lib.toggleFavorite(invName)
+    if lib.state.favorites[invName] then
+        lib.state.favorites[invName] = nil
+    else
+        lib.state.favorites[invName] = true
+    end
+    lib.saveLabels()
+end
+
+function lib.isFavorite(invName)
+    return lib.state.favorites[invName] == true
+end
+
+-- ============================================================
+--  Undo
+-- ============================================================
+
+function lib.undoTransfer(entry)
+    if not entry or not entry.undoable then return 0 end
+    local fromP = peripheral.wrap(entry.to)
+    if not fromP or not fromP.list then return 0 end
+    local moved = 0
+    if entry.item == "*" then
+        -- Undo all: move everything back
+        local ok, items = pcall(fromP.list)
+        if ok and items then
+            for slot, item in pairs(items) do
+                local okM, r = pcall(fromP.pushItems, entry.from, slot, item.count)
+                if okM and r then moved = moved + r end
+            end
+        end
+    else
+        moved = lib.moveItems(fromP, entry.from, entry.item, entry.moved)
+    end
+    if moved > 0 then
+        lib.addHistory(entry.to, entry.from, entry.item, entry.moved, moved)
+        -- Mark original entry as no longer undoable
+        entry.undoable = false
+        lib.saveHistory()
+        lib.tLog("[UNDO] " .. moved .. "x " .. lib.shortName(entry.item) .. " -> " .. lib.shortName(entry.from))
+    end
+    return moved
+end
+
+-- ============================================================
+--  Disconnect detection
+-- ============================================================
+
+function lib.checkDisconnected()
+    lib.state.disconnected = {}
+    local available = {}
+    for _, name in ipairs(peripheral.getNames()) do
+        available[name] = true
+    end
+    -- Check inventories used by rules
+    for _, rule in ipairs(lib.state.rules) do
+        if not available[rule.from] then
+            lib.state.disconnected[rule.from] = true
+        end
+        if not available[rule.to] then
+            lib.state.disconnected[rule.to] = true
+        end
+    end
+    -- Check inventories used by tasks
+    for _, task in ipairs(lib.state.tasks) do
+        if task.from and not available[task.from] then
+            lib.state.disconnected[task.from] = true
+        end
+        if task.to and not available[task.to] then
+            lib.state.disconnected[task.to] = true
+        end
+    end
+    -- Check worker
+    if lib.state.workerActive then
+        if lib.state.workerFrom and not available[lib.state.workerFrom] then
+            lib.state.disconnected[lib.state.workerFrom] = true
+        end
+        if lib.state.workerTo and not available[lib.state.workerTo] then
+            lib.state.disconnected[lib.state.workerTo] = true
+        end
+    end
+    return lib.state.disconnected
 end
 
 return lib

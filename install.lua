@@ -1,6 +1,6 @@
 -- ============================================================
---  install.lua  v5.1
---  Descarga todos los archivos de Transfer v5.1
+--  install.lua  v5.2
+--  Descarga todos los archivos de Transfer v5.2
 --  Uso: wget run https://raw.githubusercontent.com/SebasRamz-Murillo/transfer_craftos/main/install.lua
 -- ============================================================
 
@@ -11,10 +11,11 @@ local files = {
     "transfer_lib.lua",
     "transfer_tasks.lua",
     "transfer_worker.lua",
+    "transfer_alerts.lua",
     "transfer_ui.lua",
 }
 
-print("=== Transfer v5.1 Installer ===")
+print("=== Transfer v5.2 Installer ===")
 print("")
 
 for _, file in ipairs(files) do
