@@ -44,6 +44,7 @@ local function newCtx(monPeriph, monName, label, scale)
         _taskType    = nil,
         _taskLoop    = true,
         _taskInterval = 10,
+        history      = {},
     }
 
     function ctx:clear(bg)
@@ -81,12 +82,13 @@ local function newCtx(monPeriph, monName, label, scale)
 
     function ctx:header(title)
         self:fill(1, 1, self.W, 1, colors.gray)
-        self:write(2, 1, self.label .. ": " .. title, colors.yellow, colors.gray)
+        local titleText = self.label .. ":" .. title
+        if #titleText > self.W - 10 then titleText = title end
+        self:write(2, 1, titleText, colors.yellow, colors.gray)
         if self.nav.screen ~= "menu" then
-            self:btn(self.W - 8, 1, 8, 1, "MENU", colors.white, colors.red, function()
-                self.nav.screen = "menu"
-                self.nav.page = 1
+            self:btn(self.W - 4, 1, 4, 1, "<", colors.white, colors.red, function()
                 self.nav.searchText = ""
+                self:goBack()
             end)
         end
     end
@@ -115,7 +117,9 @@ local function newCtx(monPeriph, monName, label, scale)
     end
 
     function ctx:handleTouch(x, y)
-        for _, b in ipairs(self.buttons) do
+        -- Reverse iterate: last-added buttons (paginate, footer) have priority
+        for i = #self.buttons, 1, -1 do
+            local b = self.buttons[i]
             if x >= b.x1 and x <= b.x2 and y >= b.y1 and y <= b.y2 then
                 b.action()
                 self.dirty = true
@@ -123,6 +127,23 @@ local function newCtx(monPeriph, monName, label, scale)
             end
         end
         return false
+    end
+
+    -- Navigation helpers
+    function ctx:goTo(screen)
+        table.insert(self.nav.history, self.nav.screen)
+        if #self.nav.history > 20 then table.remove(self.nav.history, 1) end
+        self.nav.screen = screen
+        self.nav.page = 1
+    end
+
+    function ctx:goBack()
+        if #self.nav.history > 0 then
+            self.nav.screen = table.remove(self.nav.history)
+            self.nav.page = 1
+        else
+            self.nav.screen = "menu"
+        end
     end
 
     return ctx
@@ -280,16 +301,16 @@ function scr14.menu(ctx)
     local y = 2
     local hw = math.floor((ctx.W - 3) / 2)
     ctx:btn(2, y, hw, 2, "TRANSFER", colors.white, colors.green, function()
-        lib.refreshInventories(); ctx.nav.screen = "xfer_from"; ctx.nav.page = 1
+        lib.refreshInventories(); ctx:goTo("xfer_from")
     end)
     ctx:btn(2 + hw + 1, y, hw, 2, "EMPTY", colors.white, colors.orange, function()
-        lib.refreshInventories(); ctx.nav.screen = "bulk_from"; ctx.nav.page = 1
+        lib.refreshInventories(); ctx:goTo("bulk_from")
     end); y = y + 3
     ctx:btn(2, y, hw, 2, "WORKER", colors.black, colors.yellow, function()
-        lib.refreshInventories(); ctx.nav.screen = "wk_from"; ctx.nav.page = 1
+        lib.refreshInventories(); ctx:goTo("wk_from")
     end)
     ctx:btn(2 + hw + 1, y, hw, 2, "GROUP", colors.white, colors.purple, function()
-        ctx.nav.screen = "grp_confirm"
+        ctx:goTo("grp_confirm")
     end); y = y + 3
     -- Refresh button
     ctx:btn(2, y, ctx.W - 2, 1, "REFRESH INV", colors.black, colors.lightGray, function()
@@ -304,7 +325,7 @@ function scr14.menu(ctx)
         ctx:write(3, y, "W:" .. ws.cycles .. " mv:" .. ws.totalMoved, colors.white, colors.green)
         y = y + 1
         ctx:btn(2, y, ctx.W - 2, 1, "VIEW WK", colors.black, colors.lime, function()
-            ctx.nav.screen = "wk_running"
+            ctx:goTo("wk_running")
         end)
     end
     ctx:footer("Inv: " .. #st.inventories)
@@ -317,7 +338,7 @@ function scr14.xfer_from(ctx)
         ctx.nav.items = lib.getItems(inv)
         ctx.nav.searchText = ""
         lib.applyFilter(ctx.nav)
-        ctx.nav.screen = "xfer_item"; ctx.nav.page = 1
+        ctx:goTo("xfer_item")
     end)
 end
 
@@ -325,7 +346,7 @@ function scr14.xfer_item(ctx)
     compItemList(ctx, "Seleccionar Item", function(item)
         ctx.nav.selectedItem = item
         ctx.nav.cantidad = item.total
-        ctx.nav.screen = "xfer_qty"
+        ctx:goTo("xfer_qty")
     end)
 end
 
@@ -344,14 +365,14 @@ end
 
 function scr14.xfer_qty(ctx)
     compQtySelector(ctx, "Cantidad", ctx.nav.selectedItem.total, false, function()
-        ctx.nav.screen = "xfer_to"; ctx.nav.page = 1
+        ctx:goTo("xfer_to")
     end)
 end
 
 function scr14.xfer_to(ctx)
     compSelectInv(ctx, "Transferir: Destino", function(inv)
         ctx.nav.toInv = inv
-        ctx.nav.screen = "xfer_confirm"
+        ctx:goTo("xfer_confirm")
     end, ctx.nav.fromInv and ctx.nav.fromInv.name)
 end
 
@@ -372,10 +393,10 @@ function scr14.xfer_confirm(ctx)
     y = y + 1
     ctx:write(2, y, "T:" .. ti, colors.cyan, colors.black); y = y + 2
     ctx:btn(2, y, math.floor(ctx.W / 2) - 1, 2, "CANCEL", colors.white, colors.red, function()
-        n.screen = "menu"
+        n.screen = "menu"; n.history = {}
     end)
     ctx:btn(math.floor(ctx.W / 2) + 1, y, math.floor(ctx.W / 2) - 1, 2, "RUN", colors.white, colors.green, function()
-        n.screen = "xfer_exec"
+        ctx:goTo("xfer_exec")
     end)
 end
 
@@ -410,20 +431,20 @@ function scr14.xfer_result(ctx)
     end
     y = ctx.H - 2
     ctx:btn(2, y, ctx.W - 2, 2, "BACK", colors.white, colors.blue, function()
-        n.screen = "menu"; n.fromInv = nil; n.toInv = nil; n.selectedItem = nil; n.page = 1
+        n.screen = "menu"; n.history = {}; n.fromInv = nil; n.toInv = nil; n.selectedItem = nil; n.page = 1
     end)
 end
 
 -- Bulk flow
 function scr14.bulk_from(ctx)
     compSelectInv(ctx, "Vaciar: Origen", function(inv)
-        ctx.nav.fromInv = inv; ctx.nav.screen = "bulk_to"; ctx.nav.page = 1
+        ctx.nav.fromInv = inv; ctx:goTo("bulk_to")
     end)
 end
 
 function scr14.bulk_to(ctx)
     compSelectInv(ctx, "Vaciar: Destino", function(inv)
-        ctx.nav.toInv = inv; ctx.nav.screen = "bulk_confirm"
+        ctx.nav.toInv = inv; ctx:goTo("bulk_confirm")
     end, ctx.nav.fromInv and ctx.nav.fromInv.name)
 end
 
@@ -447,9 +468,9 @@ function scr14.bulk_confirm(ctx)
     if #to > ctx.W - 8 then to = to:sub(1, ctx.W - 10) .. ".." end
     y = y + 1
     ctx:write(3, y, to, colors.cyan, colors.black); y = y + 2
-    ctx:btn(2, y, math.floor(ctx.W / 2) - 1, 2, "CANCEL", colors.white, colors.red, function() n.screen = "menu" end)
+    ctx:btn(2, y, math.floor(ctx.W / 2) - 1, 2, "CANCEL", colors.white, colors.red, function() n.screen = "menu"; n.history = {} end)
     ctx:btn(math.floor(ctx.W / 2) + 1, y, math.floor(ctx.W / 2) - 1, 2, "EMPTY", colors.white, colors.green, function()
-        n.screen = "bulk_exec"
+        ctx:goTo("bulk_exec")
     end)
 end
 
@@ -493,7 +514,7 @@ function scr14.bulk_result(ctx)
     end
     y = ctx.H - 2
     ctx:btn(2, y, ctx.W - 2, 2, "BACK", colors.white, colors.blue, function()
-        ctx.nav.screen = "menu"; ctx.nav.fromInv = nil; ctx.nav.toInv = nil
+        ctx.nav.screen = "menu"; ctx.nav.history = {}; ctx.nav.fromInv = nil; ctx.nav.toInv = nil
     end)
 end
 
@@ -508,10 +529,10 @@ function scr14.grp_confirm(ctx)
     ctx:fill(2, y, ctx.W - 2, 1, colors.yellow)
     ctx:write(3, y, "Afecta TODOS los inv", colors.black, colors.yellow); y = y + 2
     ctx:btn(2, y, math.floor(ctx.W / 2) - 1, 2, "CANCEL", colors.white, colors.red, function()
-        ctx.nav.screen = "menu"
+        ctx.nav.screen = "menu"; ctx.nav.history = {}
     end)
     ctx:btn(math.floor(ctx.W / 2) + 1, y, math.floor(ctx.W / 2) - 1, 2, "RUN", colors.white, colors.green, function()
-        ctx.nav.screen = "grp_exec"
+        ctx:goTo("grp_exec")
     end)
 end
 
@@ -527,7 +548,7 @@ function scr14.grp_result(ctx)
     if not r then
         ctx:write(2, 3, "No data", colors.red, colors.black)
         ctx:btn(2, ctx.H - 2, ctx.W - 2, 2, "BACK", colors.white, colors.blue, function()
-            ctx.nav.screen = "menu"
+            ctx.nav.screen = "menu"; ctx.nav.history = {}
         end)
         return
     end
@@ -553,20 +574,20 @@ function scr14.grp_result(ctx)
         ctx:write(2, y, "+" .. (#r.details - maxD) .. " mas", colors.gray, colors.black)
     end
     ctx:btn(2, ctx.H - 2, ctx.W - 2, 2, "BACK", colors.white, colors.blue, function()
-        ctx.nav.screen = "menu"
+        ctx.nav.screen = "menu"; ctx.nav.history = {}
     end)
 end
 
 -- Worker flow
 function scr14.wk_from(ctx)
     compSelectInv(ctx, "Worker: Origen", function(inv)
-        ctx.nav.fromInv = inv; ctx.nav.screen = "wk_to"; ctx.nav.page = 1
+        ctx.nav.fromInv = inv; ctx:goTo("wk_to")
     end)
 end
 
 function scr14.wk_to(ctx)
     compSelectInv(ctx, "Worker: Destino", function(inv)
-        ctx.nav.toInv = inv; ctx.nav.screen = "wk_interval"
+        ctx.nav.toInv = inv; ctx:goTo("wk_interval")
     end, ctx.nav.fromInv and ctx.nav.fromInv.name)
 end
 
@@ -586,7 +607,7 @@ function scr14.wk_interval(ctx)
     ctx:btn(2, y, math.floor((ctx.W - 2) / 2), 1, "-", colors.white, colors.orange, function() st.workerInterval = math.max(1, st.workerInterval - 1) end)
     ctx:btn(2 + math.floor((ctx.W - 2) / 2), y, math.floor((ctx.W - 2) / 2), 1, "+", colors.white, colors.cyan, function() st.workerInterval = math.min(300, st.workerInterval + 1) end)
     y = y + 2
-    ctx:btn(2, y, ctx.W - 2, 2, "NEXT", colors.white, colors.green, function() ctx.nav.screen = "wk_confirm" end)
+    ctx:btn(2, y, ctx.W - 2, 2, "NEXT", colors.white, colors.green, function() ctx:goTo("wk_confirm") end)
 end
 
 function scr14.wk_confirm(ctx)
@@ -599,10 +620,10 @@ function scr14.wk_confirm(ctx)
     ctx:write(2, y, "Cada " .. st.workerInterval .. " segundos", colors.yellow, colors.black); y = y + 2
     ctx:fill(2, y, ctx.W - 2, 2, colors.yellow)
     ctx:write(3, y, "VACIA TODO CONTINUO", colors.black, colors.yellow); y = y + 3
-    ctx:btn(2, y, math.floor(ctx.W / 2) - 2, 2, "CANCELAR", colors.white, colors.red, function() n.screen = "menu" end)
+    ctx:btn(2, y, math.floor(ctx.W / 2) - 2, 2, "CANCELAR", colors.white, colors.red, function() n.screen = "menu"; n.history = {} end)
     ctx:btn(math.floor(ctx.W / 2) + 1, y, math.floor(ctx.W / 2) - 1, 2, "INICIAR", colors.black, colors.lime, function()
         worker.start(n.fromInv, n.toInv, st.workerInterval)
-        n.screen = "wk_running"
+        ctx:goTo("wk_running")
     end)
 end
 
@@ -641,12 +662,12 @@ function scr14.wk_running(ctx)
     if st.workerActive then
         ctx:btn(2, by, math.floor(ctx.W / 2) - 1, 2, "PAUSE", colors.white, colors.orange, function() worker.pause() end)
         ctx:btn(math.floor(ctx.W / 2) + 1, by, math.floor(ctx.W / 2) - 1, 2, "STOP", colors.white, colors.red, function()
-            worker.stop(); ctx.nav.screen = "wk_stopped"
+            worker.stop(); ctx:goTo("wk_stopped")
         end)
     else
         ctx:btn(2, by, math.floor(ctx.W / 2) - 1, 2, "RES", colors.black, colors.lime, function() worker.resume() end)
         ctx:btn(math.floor(ctx.W / 2) + 1, by, math.floor(ctx.W / 2) - 1, 2, "STOP", colors.white, colors.red, function()
-            ctx.nav.screen = "wk_stopped"
+            ctx:goTo("wk_stopped")
         end)
     end
 end
@@ -659,11 +680,11 @@ function scr14.wk_stopped(ctx)
     ctx:write(3, y + 1, "C:" .. ws.cycles .. " M:" .. ws.totalMoved, colors.lime, colors.gray)
     y = y + 3
     ctx:btn(2, y, math.floor(ctx.W / 2) - 1, 2, "REST", colors.black, colors.yellow, function()
-        worker.restart(); ctx.nav.screen = "wk_running"
+        worker.restart(); ctx:goTo("wk_running")
     end)
     ctx:btn(math.floor(ctx.W / 2) + 1, y, math.floor(ctx.W / 2) - 1, 2, "MENU", colors.white, colors.blue, function()
         st.workerActive = false; st.workerFrom = nil; st.workerTo = nil
-        ctx.nav.screen = "menu"
+        ctx.nav.screen = "menu"; ctx.nav.history = {}
     end)
 end
 
@@ -679,10 +700,10 @@ function scr10.menu(ctx)
     local rstats = #st.rules
     local y = 2
     ctx:btn(2, y, ctx.W - 2, 2, "TASKS(" .. tstats .. ")", colors.white, colors.blue, function()
-        ctx.nav.screen = "tasks_list"; ctx.nav.page = 1
+        ctx:goTo("tasks_list")
     end); y = y + 3
     ctx:btn(2, y, ctx.W - 2, 2, "RULES(" .. rstats .. ")", colors.white, colors.purple, function()
-        ctx.nav.screen = "rules_list"; ctx.nav.page = 1
+        ctx:goTo("rules_list")
     end); y = y + 3
     ctx:btn(2, y, ctx.W - 2, 1, "REFRESH INV", colors.black, colors.lightGray, function()
         lib.refreshInventories()
@@ -696,7 +717,7 @@ end
 function scr10.tasks_list(ctx)
     ctx:header("Tasks")
     ctx:btn(2, 2, ctx.W - 2, 1, "+NEW", colors.white, colors.green, function()
-        lib.refreshInventories(); ctx.nav.screen = "task_type"; ctx.nav.page = 1
+        lib.refreshInventories(); ctx:goTo("task_type")
     end)
     if tasks.count() == 0 then
         ctx:write(2, 4, "Empty", colors.gray, colors.black); return
@@ -739,10 +760,10 @@ function scr10.task_type(ctx)
     ctx:header("Tarea: Tipo")
     local y = 3
     ctx:btn(3, y, ctx.W - 4, 2, "TRANSFERIR ITEM", colors.white, colors.green, function()
-        ctx.nav._taskType = "transfer"; ctx.nav.screen = "task_from"; ctx.nav.page = 1
+        ctx.nav._taskType = "transfer"; ctx:goTo("task_from")
     end); y = y + 3
     ctx:btn(3, y, ctx.W - 4, 2, "VACIAR INVENTARIO", colors.white, colors.orange, function()
-        ctx.nav._taskType = "drain"; ctx.nav.screen = "task_from"; ctx.nav.page = 1
+        ctx.nav._taskType = "drain"; ctx:goTo("task_from")
     end)
 end
 
@@ -750,11 +771,11 @@ function scr10.task_from(ctx)
     compSelectInv(ctx, "Tarea: Origen", function(inv)
         ctx.nav.fromInv = inv
         if ctx.nav._taskType == "drain" then
-            ctx.nav.screen = "task_to"; ctx.nav.page = 1
+            ctx:goTo("task_to")
         else
             ctx.nav.items = lib.getItems(inv)
             ctx.nav.searchText = ""; lib.applyFilter(ctx.nav)
-            ctx.nav.screen = "task_item"; ctx.nav.page = 1
+            ctx:goTo("task_item")
         end
     end)
 end
@@ -762,7 +783,7 @@ end
 function scr10.task_item(ctx)
     compItemList(ctx, "Tarea: Item", function(item)
         ctx.nav.selectedItem = item; ctx.nav.cantidad = 0
-        ctx.nav.screen = "task_qty"
+        ctx:goTo("task_qty")
     end)
 end
 
@@ -778,13 +799,13 @@ end
 
 function scr10.task_qty(ctx)
     compQtySelector(ctx, "Tarea: Cantidad", ctx.nav.selectedItem.total, true, function()
-        ctx.nav.screen = "task_to"; ctx.nav.page = 1
+        ctx:goTo("task_to")
     end)
 end
 
 function scr10.task_to(ctx)
     compSelectInv(ctx, "Tarea: Destino", function(inv)
-        ctx.nav.toInv = inv; ctx.nav.screen = "task_config"
+        ctx.nav.toInv = inv; ctx:goTo("task_config")
     end, ctx.nav.fromInv and ctx.nav.fromInv.name)
 end
 
@@ -824,7 +845,7 @@ function scr10.task_config(ctx)
             interval = n._taskInterval or 10,
             loop     = n._taskLoop ~= false,
         })
-        n.screen = "tasks_list"; n.fromInv = nil; n.toInv = nil; n.selectedItem = nil; n.page = 1
+        n.screen = "tasks_list"; n.history = {}; n.fromInv = nil; n.toInv = nil; n.selectedItem = nil; n.page = 1
     end)
 end
 
@@ -838,7 +859,7 @@ function scr10.rules_list(ctx)
         lib.tLog("Rules: " .. (st.rulesRunning and "ON" or "OFF"))
     end)
     ctx:btn(2, 2, 5, 1, "+NEW", colors.white, colors.green, function()
-        lib.refreshInventories(); ctx.nav.screen = "rule_from"; ctx.nav.page = 1
+        lib.refreshInventories(); ctx:goTo("rule_from")
     end)
     if #st.rules == 0 then ctx:write(2, 4, "Empty", colors.gray, colors.black); return end
     local y = 4
@@ -867,7 +888,7 @@ function scr10.rule_from(ctx)
     compSelectInv(ctx, "Regla: Origen", function(inv)
         ctx.nav.fromInv = inv
         ctx.nav.items = lib.getItems(inv); ctx.nav.searchText = ""; lib.applyFilter(ctx.nav)
-        ctx.nav.screen = "rule_item"; ctx.nav.page = 1
+        ctx:goTo("rule_item")
     end)
 end
 
@@ -876,7 +897,7 @@ function scr10.rule_item(ctx)
     local y = 3
     ctx:btn(2, y, ctx.W - 2, 2, "MOVER TODO (*)", colors.white, colors.purple, function()
         ctx.nav.selectedItem = { name = "*", total = 0 }
-        lib.refreshInventories(); ctx.nav.screen = "rule_to"; ctx.nav.page = 1
+        lib.refreshInventories(); ctx:goTo("rule_to")
     end)
     y = y + 3
     local di = ctx.nav.filteredItems
@@ -889,7 +910,7 @@ function scr10.rule_item(ctx)
         local bg = (i % 2 == 0) and colors.blue or colors.gray
         ctx:btn(2, y, ctx.W - 2, 2, "", colors.white, bg, function()
             ctx.nav.selectedItem = item; lib.refreshInventories()
-            ctx.nav.screen = "rule_to"; ctx.nav.page = 1
+            ctx:goTo("rule_to")
         end)
         ctx:write(4, y + 1, sn(item.name) .. " x" .. item.total, colors.white, bg)
         y = y + 3
@@ -899,7 +920,7 @@ end
 
 function scr10.rule_to(ctx)
     compSelectInv(ctx, "Regla: Destino", function(inv)
-        ctx.nav.toInv = inv; ctx.nav.screen = "rule_interval"
+        ctx.nav.toInv = inv; ctx:goTo("rule_interval")
     end, ctx.nav.fromInv and ctx.nav.fromInv.name)
 end
 
@@ -920,7 +941,7 @@ function scr10.rule_interval(ctx)
             })
             lib.saveRules()
             lib.tLog("Regla #" .. #st.rules .. " creada: " .. si2 .. " c/" .. secs .. "s")
-            ctx.nav.screen = "rules_list"; ctx.nav.fromInv = nil; ctx.nav.toInv = nil; ctx.nav.page = 1
+            ctx.nav.screen = "rules_list"; ctx.nav.history = {}; ctx.nav.fromInv = nil; ctx.nav.toInv = nil; ctx.nav.page = 1
         end)
         y = y + 2
     end
@@ -937,10 +958,10 @@ function scr13.menu(ctx)
     local y = 2
     local hw = math.floor((ctx.W - 3) / 2)
     ctx:btn(2, y, hw, 2, "BROWSE", colors.white, colors.cyan, function()
-        lib.refreshInventories(); ctx.nav.screen = "inv_list"; ctx.nav.page = 1
+        lib.refreshInventories(); ctx:goTo("inv_list")
     end)
     ctx:btn(2 + hw + 1, y, hw, 2, "FIND", colors.white, colors.orange, function()
-        lib.refreshInventories(); ctx.nav.screen = "search_all"; ctx.nav.page = 1
+        lib.refreshInventories(); ctx:goTo("search_all")
         local all, map = {}, {}
         for _, inv in ipairs(st.inventories) do
             local items = lib.getItems(inv)
@@ -957,13 +978,13 @@ function scr13.menu(ctx)
         ctx.nav.items = all; ctx.nav.searchText = ""; lib.applyFilter(ctx.nav)
     end); y = y + 3
     ctx:btn(2, y, hw, 2, "HISTORY", colors.white, colors.purple, function()
-        ctx.nav.screen = "history"; ctx.nav.page = 1
+        ctx:goTo("history")
     end)
     ctx:btn(2 + hw + 1, y, hw, 2, "RENAME", colors.white, colors.blue, function()
-        lib.refreshInventories(); ctx.nav.screen = "rename_list"; ctx.nav.page = 1
+        lib.refreshInventories(); ctx:goTo("rename_list")
     end); y = y + 3
     ctx:btn(2, y, hw, 2, "LABELS", colors.black, colors.yellow, function()
-        ctx.nav.screen = "labels_menu"; ctx.nav.page = 1
+        ctx:goTo("labels_menu")
     end)
     ctx:btn(2 + hw + 1, y, hw, 2, "REFRESH", colors.black, colors.lightGray, function()
         lib.refreshInventories()
@@ -977,7 +998,7 @@ function scr13.inv_list(ctx)
         ctx.nav.fromInv = inv
         ctx.nav.items = lib.getItems(inv)
         ctx.nav.searchText = ""; lib.applyFilter(ctx.nav)
-        ctx.nav.screen = "inv_detail"; ctx.nav.page = 1
+        ctx:goTo("inv_detail")
     end)
 end
 
@@ -1093,7 +1114,7 @@ function scr13.labels_menu(ctx)
     ctx:header("Labels")
     ctx:btn(2, 2, ctx.W - 2, 1, "+ NEW LABEL", colors.white, colors.green, function()
         ctx.nav._extraMons = lib.getExtraMonitors()
-        ctx.nav.screen = "label_mon"; ctx.nav.page = 1
+        ctx:goTo("label_mon")
     end)
     if #st.labels == 0 then
         ctx:write(2, 4, "No labels", colors.gray, colors.black)
@@ -1156,7 +1177,7 @@ function scr13.label_mon(ctx)
         ctx:btn(2, y, ctx.W - 2, 2, "", colors.white, bg, function()
             ctx.nav._selMon = mn
             lib.refreshInventories()
-            ctx.nav.screen = "label_inv"; ctx.nav.page = 1
+            ctx:goTo("label_inv")
         end)
         local display = mn
         if #display > ctx.W - 4 then display = display:sub(1, ctx.W - 6) .. ".." end
@@ -1171,7 +1192,7 @@ end
 function scr13.label_inv(ctx)
     compSelectInv(ctx, "Label: Inventario", function(inv)
         ctx.nav._selInv = inv.name
-        ctx.nav.screen = "label_color"
+        ctx:goTo("label_color")
     end)
 end
 
@@ -1194,7 +1215,7 @@ function scr13.label_color(ctx)
         end
         ctx:btn(bx, by, bw - 1, 2, entry.name:sub(1, bw - 2), fg, entry.col, function()
             lib.addLabel(n._selMon, n._selInv, entry.col)
-            n.screen = "labels_menu"; n.page = 1
+            n.screen = "labels_menu"; n.history = {}; n.page = 1
             n._selMon = nil; n._selInv = nil; n._extraMons = nil
         end)
     end
@@ -1250,7 +1271,7 @@ function scr13.rename_kb(ctx)
             lib.setAlias(n._renameInv, nil)
             lib.tLog("[ALIAS] Removed for " .. n._renameInv:sub(1, 12))
         end
-        n.screen = "rename_list"; n.page = 1; n._renameInv = nil; n.searchText = ""
+        n.screen = "rename_list"; n.history = {}; n.page = 1; n._renameInv = nil; n.searchText = ""
     end)
 end
 
