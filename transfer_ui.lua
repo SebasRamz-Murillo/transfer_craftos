@@ -1247,7 +1247,7 @@ function scr13.rename_list(ctx)
         if #display > ctx.W - 4 then display = display:sub(1, ctx.W - 6) .. ".." end
         ctx:write(4, y, display, colors.white, bg)
         if alias then
-            local orig = inv.name
+            local orig = lib.shortName(inv.name)
             if #orig > ctx.W - 4 then orig = orig:sub(1, ctx.W - 6) .. ".." end
             ctx:write(4, y + 1, orig, colors.lightGray, bg)
         end
@@ -1293,8 +1293,7 @@ local function renderDashboard(ctx)
         if y >= ctx.H - 3 then break end
         local used, total = lib.getInventoryFill(inv)
         local pct = total > 0 and math.floor(used / total * 100) or 0
-        local name = lib.getAlias(inv.name):sub(1, 10)
-        local shortName = (inv.name:match(":(.+)") or inv.name):sub(1, 10)
+        local shortName = lib.getAlias(inv.name):sub(1, 10)
         local col = pct > 90 and colors.red or (pct > 60 and colors.orange or colors.green)
         ctx:write(2, y, shortName .. " " .. pct .. "%", col, colors.black)
         y = y + 1

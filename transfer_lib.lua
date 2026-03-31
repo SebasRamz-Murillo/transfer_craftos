@@ -471,8 +471,7 @@ function lib.paintMonitor(label)
     end
     -- Show inventory name/alias
     local invName = label.inventory or "?"
-    local alias = lib.state.aliases[invName]
-    local display = alias or invName
+    local display = lib.getAlias(invName)
     if #display > w - 2 then display = display:sub(1, w - 4) .. ".." end
     mon.setTextColor(fg)
     mon.setCursorPos(math.max(1, math.floor((w - #display) / 2) + 1), math.floor(h / 2))
@@ -525,8 +524,12 @@ end
 --  Aliases: nombres amigables para inventarios
 -- ============================================================
 
+function lib.shortName(invName)
+    return invName:match(":(.+)") or invName
+end
+
 function lib.getAlias(invName)
-    return lib.state.aliases[invName] or invName
+    return lib.state.aliases[invName] or lib.shortName(invName)
 end
 
 function lib.setAlias(invName, alias)
