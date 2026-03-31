@@ -31,11 +31,15 @@ end
 
 -- Dashboard + Activity auto-refresh
 local function refreshLoop()
+    local labelTick = 0
     while st.running do
-        ui.markDirty("dashboard")
-        ui.markDirty("activity")
         ui.renderMonitor("dashboard")
         ui.renderMonitor("activity")
+        labelTick = labelTick + 1
+        if labelTick >= 5 then  -- Repaint labels every 15s (5 * 3s sleep)
+            lib.paintAllLabels()
+            labelTick = 0
+        end
         sleep(3)
     end
 end
@@ -86,14 +90,30 @@ local function workerEventLoop()
     end
 end
 
--- Log update handler (refresh activity on new log entries)
+-- Log update handler (refresh activity on new log entries with debounce)
 local function logEventLoop()
+    local timer = nil
     while st.running do
-        os.pullEvent("log_update")
-        -- Activity monitor will catch up on next refreshLoop cycle
-        -- But for faster feedback, render immediately
-        ui.markDirty("activity")
-        ui.renderMonitor("activity")
+        local event, p1 = os.pullEvent()
+        if event == "log_update" then
+            if timer then os.cancelTimer(timer) end
+            timer = os.startTimer(0.5)
+        elseif event == "timer" and p1 == timer then
+            timer = nil
+            ui.renderMonitor("activity")
+        end
+    end
+end
+
+-- Action loop for deferred execution (heavy I/O outside render path)
+local function actionLoop()
+    while st.running do
+        sleep(0.1)
+        if ui.pendingAction then
+            ui.processPending()
+            -- Re-render control monitor after action completes
+            ui.renderMonitor("control")
+        end
     end
 end
 
@@ -109,6 +129,7 @@ local function main()
     -- Init
     lib.loadRules()
     lib.loadHistory()
+    lib.loadLabels()
     tasks.load()
     lib.refreshInventories()
 
@@ -116,9 +137,13 @@ local function main()
     lib.tLog("Inventarios: " .. #st.inventories)
     lib.tLog("Reglas: " .. #st.rules)
     lib.tLog("Tareas: " .. tasks.count())
+    lib.tLog("Labels: " .. #st.labels .. " Aliases: " .. (function() local n=0; for _ in pairs(st.aliases) do n=n+1 end; return n end)())
 
     -- Init monitors
     ui.init()
+
+    -- Paint labeled monitors
+    lib.paintAllLabels()
 
     -- Render inicial
     ui.renderAll()
@@ -135,7 +160,8 @@ local function main()
         worker.loop,
         terminalLoop,
         workerEventLoop,
-        logEventLoop
+        logEventLoop,
+        actionLoop
     )
 
     -- Cleanup

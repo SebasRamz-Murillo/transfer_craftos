@@ -8,6 +8,7 @@ local lib = {}
 lib.RULES_FILE   = "transfer_rules.dat"
 lib.TASKS_FILE   = "transfer_tasks.dat"
 lib.HISTORY_FILE = "transfer_history.dat"
+lib.LABELS_FILE  = "transfer_labels.dat"
 lib.MAX_HISTORY  = 100
 
 lib.MON_IDS = {
@@ -40,6 +41,8 @@ lib.state = {
         cycles = 0, totalMoved = 0, startTime = 0,
         lastItems = {}, destFull = false,
     },
+    labels  = {},   -- { {monitor=str, inventory=str, color=num}, ... }
+    aliases = {},   -- { [invName] = "friendly name", ... }
 }
 
 -- ============================================================
@@ -293,6 +296,216 @@ function lib.executeRule(rule)
         total = lib.moveItems(fromP, rule.to, rule.item, rule.cantidad == 0 and 99999 or rule.cantidad)
     end
     return total
+end
+
+-- ============================================================
+--  Agrupador: consolida items al inv con mayor cantidad
+-- ============================================================
+
+function lib.groupItems(onProgress)
+    lib.refreshInventories()
+    -- 1. Scan all inventories, build item map
+    local itemMap = {}  -- itemName -> { {inv=inv, count=N, slots={{slot,count},...}}, ... }
+    for _, inv in ipairs(lib.state.inventories) do
+        local ok, raw = pcall(inv.peripheral.list)
+        if ok and raw then
+            for slot, item in pairs(raw) do
+                if not itemMap[item.name] then itemMap[item.name] = {} end
+                -- Find or create entry for this inv
+                local found = nil
+                for _, e in ipairs(itemMap[item.name]) do
+                    if e.inv.name == inv.name then found = e; break end
+                end
+                if not found then
+                    found = { inv = inv, count = 0, slots = {} }
+                    table.insert(itemMap[item.name], found)
+                end
+                found.count = found.count + item.count
+                table.insert(found.slots, { slot = slot, count = item.count })
+            end
+        end
+    end
+
+    -- 2. For each item, find the inv with the most and move from others
+    local totalMoved = 0
+    local itemsGrouped = 0
+    local details = {}
+    local totalItems = 0
+    for _ in pairs(itemMap) do totalItems = totalItems + 1 end
+    local processed = 0
+
+    for itemName, entries in pairs(itemMap) do
+        processed = processed + 1
+        if #entries > 1 then
+            -- Find max
+            local maxEntry = entries[1]
+            for _, e in ipairs(entries) do
+                if e.count > maxEntry.count then maxEntry = e end
+            end
+            -- Move from all others to max
+            local movedForItem = 0
+            for _, e in ipairs(entries) do
+                if e.inv.name ~= maxEntry.inv.name then
+                    for _, s in ipairs(e.slots) do
+                        local okM, r = pcall(e.inv.peripheral.pushItems, maxEntry.inv.name, s.slot, s.count)
+                        local moved = (okM and r) and r or 0
+                        movedForItem = movedForItem + moved
+                        totalMoved = totalMoved + moved
+                    end
+                end
+            end
+            if movedForItem > 0 then
+                itemsGrouped = itemsGrouped + 1
+                local sn = itemName:match(":(.+)") or itemName
+                table.insert(details, { name = sn, moved = movedForItem, dest = maxEntry.inv.name })
+            end
+        end
+        if onProgress then
+            onProgress({
+                processed = processed, total = totalItems,
+                moved = totalMoved, grouped = itemsGrouped,
+                current = itemName,
+            })
+        end
+        if processed % 5 == 0 then sleep(0.05) end
+    end
+
+    table.sort(details, function(a, b) return a.moved > b.moved end)
+    lib.tLog("[GROUP] " .. itemsGrouped .. " items agrupados, " .. totalMoved .. " movidos")
+    return {
+        totalMoved = totalMoved,
+        itemsGrouped = itemsGrouped,
+        totalTypes = totalItems,
+        details = details,
+    }
+end
+
+-- ============================================================
+--  Labels: monitores pintados vinculados a inventarios
+-- ============================================================
+
+function lib.saveLabels()
+    local data = { labels = lib.state.labels, aliases = lib.state.aliases }
+    local f = fs.open(lib.LABELS_FILE, "w")
+    f.write(textutils.serialise(data))
+    f.close()
+end
+
+function lib.loadLabels()
+    if fs.exists(lib.LABELS_FILE) then
+        local f = fs.open(lib.LABELS_FILE, "r")
+        local d = textutils.unserialise(f.readAll())
+        f.close()
+        if d then
+            lib.state.labels = d.labels or {}
+            lib.state.aliases = d.aliases or {}
+        end
+    end
+end
+
+function lib.getExtraMonitors()
+    local reserved = {}
+    for _, id in pairs(lib.MON_IDS) do reserved[id] = true end
+    local result = {}
+    for _, name in ipairs(peripheral.getNames()) do
+        if name:find("^monitor") and not reserved[name] then
+            local ok, mon = pcall(peripheral.wrap, name)
+            if ok and mon and mon.setBackgroundColor then
+                table.insert(result, name)
+            end
+        end
+    end
+    table.sort(result)
+    return result
+end
+
+function lib.paintMonitor(label)
+    local mon = peripheral.wrap(label.monitor)
+    if not mon then return false end
+    local col = label.color or colors.blue
+    mon.setTextScale(1.0)
+    mon.setBackgroundColor(col)
+    mon.clear()
+    local w, h = mon.getSize()
+    -- Determine text color for readability
+    local fg = colors.white
+    if col == colors.white or col == colors.yellow or col == colors.lime
+       or col == colors.lightGray or col == colors.lightBlue or col == colors.pink then
+        fg = colors.black
+    end
+    -- Show inventory name/alias
+    local invName = label.inventory or "?"
+    local alias = lib.state.aliases[invName]
+    local display = alias or invName
+    if #display > w - 2 then display = display:sub(1, w - 4) .. ".." end
+    mon.setTextColor(fg)
+    mon.setCursorPos(math.max(1, math.floor((w - #display) / 2) + 1), math.floor(h / 2))
+    mon.write(display)
+    -- Show monitor id small at bottom
+    local mid = label.monitor
+    if #mid > w - 2 then mid = mid:sub(1, w - 4) .. ".." end
+    mon.setCursorPos(1, h)
+    mon.setTextColor(fg)
+    mon.write(mid:sub(1, w))
+    return true
+end
+
+function lib.paintAllLabels()
+    for _, label in ipairs(lib.state.labels) do
+        lib.paintMonitor(label)
+    end
+end
+
+function lib.addLabel(monName, invName, col)
+    -- Remove existing label for this monitor
+    for i = #lib.state.labels, 1, -1 do
+        if lib.state.labels[i].monitor == monName then
+            table.remove(lib.state.labels, i)
+        end
+    end
+    local label = { monitor = monName, inventory = invName, color = col }
+    table.insert(lib.state.labels, label)
+    lib.saveLabels()
+    lib.paintMonitor(label)
+    lib.tLog("[LABEL] " .. monName .. " -> " .. invName)
+end
+
+function lib.removeLabel(index)
+    local label = lib.state.labels[index]
+    if label then
+        -- Clear monitor
+        local mon = peripheral.wrap(label.monitor)
+        if mon then
+            mon.setBackgroundColor(colors.black)
+            mon.clear()
+        end
+        table.remove(lib.state.labels, index)
+        lib.saveLabels()
+        lib.tLog("[LABEL] Removed " .. label.monitor)
+    end
+end
+
+-- ============================================================
+--  Aliases: nombres amigables para inventarios
+-- ============================================================
+
+function lib.getAlias(invName)
+    return lib.state.aliases[invName] or invName
+end
+
+function lib.setAlias(invName, alias)
+    if alias and alias ~= "" then
+        lib.state.aliases[invName] = alias
+    else
+        lib.state.aliases[invName] = nil
+    end
+    lib.saveLabels()
+    -- Refresh any painted monitors that show this inventory
+    for _, label in ipairs(lib.state.labels) do
+        if label.inventory == invName then
+            lib.paintMonitor(label)
+        end
+    end
 end
 
 return lib
