@@ -13,6 +13,7 @@ function tasks.save()
             name = t.name, type = t.type, from = t.from, to = t.to,
             item = t.item, cantidad = t.cantidad, interval = t.interval,
             loop = t.loop, enabled = t.enabled, priority = t.priority,
+            scheduleTime = t.scheduleTime,
         })
     end
     lib.safeWrite(lib.TASKS_FILE, data)
@@ -46,6 +47,7 @@ function tasks.create(opts)
         loop     = opts.loop ~= false,
         enabled  = true,
         priority = opts.priority or (#lib.state.tasks + 1),
+        scheduleTime = opts.scheduleTime,
         lastRun  = 0, status = "idle", lastResult = nil,
     }
     table.insert(lib.state.tasks, t)
@@ -96,7 +98,56 @@ function tasks.countEnabled()
     return n
 end
 
+-- Collect: search all inventories (except dest) for an item and move to dest
+function tasks.executeCollect(t)
+    t.status = "running"
+    local moved = 0
+    local qty = t.cantidad == 0 and lib.MAX_QUANTITY or t.cantidad
+    local usePattern = t.item ~= "*" and lib.isPattern(t.item)
+    for _, inv in ipairs(lib.state.inventories) do
+        if inv.name ~= t.to then
+            if usePattern then
+                local ok, raw = pcall(inv.peripheral.list)
+                if ok and raw then
+                    for _, item in pairs(raw) do
+                        if lib.matchesPattern(item.name, t.item) then
+                            local m = lib.moveItems(inv.peripheral, t.to, item.name, qty - moved)
+                            moved = moved + m
+                            if moved >= qty then break end
+                        end
+                    end
+                end
+            else
+                local m = lib.moveItems(inv.peripheral, t.to, t.item, qty - moved)
+                moved = moved + m
+            end
+            if moved >= qty then break end
+        end
+    end
+    return moved
+end
+
 function tasks.execute(t)
+    -- Collect type searches all inventories
+    if t.type == "collect" then
+        local moved = tasks.executeCollect(t)
+        t.lastRun = os.clock()
+        t.lastResult = { moved = moved }
+        if moved > 0 then
+            t.status = "done"
+            local si = t.item:match(":(.+)") or t.item
+            lib.tLog("[TASK] " .. t.name .. ": " .. moved .. "x " .. si .. " (collect)")
+            lib.addHistory("*", t.to, t.item, t.cantidad, moved)
+        else
+            t.status = "idle"
+        end
+        if not t.loop and moved > 0 then
+            t.enabled = false; tasks.save()
+        end
+        return moved
+    end
+
+    -- Normal transfer/drain
     local fromP = peripheral.wrap(t.from)
     if not fromP or not fromP.list then
         t.status = "error"
@@ -112,6 +163,18 @@ function tasks.execute(t)
             for slot, item in pairs(raw) do
                 local okM, r = pcall(fromP.pushItems, t.to, slot, item.count)
                 if okM and r then moved = moved + r end
+            end
+        end
+    elseif lib.isPattern(t.item) then
+        local qty = t.cantidad == 0 and lib.MAX_QUANTITY or t.cantidad
+        local ok, raw = pcall(fromP.list)
+        if ok and raw then
+            for _, item in pairs(raw) do
+                if lib.matchesPattern(item.name, t.item) then
+                    local m = lib.moveItems(fromP, t.to, item.name, qty - moved)
+                    moved = moved + m
+                    if moved >= qty then break end
+                end
             end
         end
     else
@@ -141,8 +204,17 @@ function tasks.loop()
         local now = os.clock()
         for _, t in ipairs(lib.state.tasks) do
             if t.enabled and t.status ~= "running" then
-                local lr = t.lastRun or 0
-                if now - lr >= t.interval then tasks.execute(t) end
+                if t.scheduleTime then
+                    local gameTime = os.time()
+                    local gameDay = os.day()
+                    if gameTime >= t.scheduleTime and t._lastRunDay ~= gameDay then
+                        t._lastRunDay = gameDay
+                        tasks.execute(t)
+                    end
+                else
+                    local lr = t.lastRun or 0
+                    if now - lr >= t.interval then tasks.execute(t) end
+                end
             end
         end
     end

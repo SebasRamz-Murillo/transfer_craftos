@@ -1,10 +1,10 @@
 -- ============================================================
---  transfer.lua  v5.1
+--  transfer.lua  v5.2
 --  Main: carga modulos, inicia 5 monitores, loops en paralelo
 --
 --  Monitores:
 --    14 (3x3) CONTROL    = Transferir, Vaciar, Worker
---    10 (3x3) AUTOMATIZAR = Tareas, Reglas
+--    10 (3x3) AUTOMATIZAR = Tareas, Reglas, Alertas
 --    13 (3x3) INVENTARIO  = Explorar, Buscar, Historial
 --    12 (2x7) DASHBOARD   = Status en vivo (techo)
 --    11 (2x7) ACTIVIDAD   = Feed de eventos (techo)
@@ -13,6 +13,7 @@
 local lib    = require("transfer_lib")
 local tasks  = require("transfer_tasks")
 local worker = require("transfer_worker")
+local alerts = require("transfer_alerts")
 local ui     = require("transfer_ui")
 
 local st = lib.state
@@ -133,10 +134,13 @@ local function main()
     tasks.load()
     lib.refreshInventories()
 
-    lib.tLog("Transfer v5.1 Multi-Monitor")
+    alerts.load()
+
+    lib.tLog("Transfer v5.2 Multi-Monitor")
     lib.tLog("Inventarios: " .. #st.inventories)
     lib.tLog("Reglas: " .. #st.rules)
     lib.tLog("Tareas: " .. tasks.count())
+    lib.tLog("Alertas: " .. alerts.count())
     local aliasCount = 0
     for _ in pairs(st.aliases) do aliasCount = aliasCount + 1 end
     lib.tLog("Labels: " .. #st.labels .. " Aliases: " .. aliasCount)
@@ -153,6 +157,19 @@ local function main()
 
     lib.tLog("Sistema listo. Monitores activos.")
 
+    -- Disconnect check loop
+    local function disconnectLoop()
+        while st.running do
+            sleep(15)
+            local disc = lib.checkDisconnected()
+            local count = 0
+            for _ in pairs(disc) do count = count + 1 end
+            if count > 0 then
+                lib.tLog("[WARN] " .. count .. " inv desconectados")
+            end
+        end
+    end
+
     -- Loops en paralelo
     parallel.waitForAny(
         touchLoop,
@@ -163,7 +180,9 @@ local function main()
         terminalLoop,
         workerEventLoop,
         logEventLoop,
-        actionLoop
+        actionLoop,
+        alerts.loop,
+        disconnectLoop
     )
 
     -- Cleanup
