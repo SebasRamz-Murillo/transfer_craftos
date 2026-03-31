@@ -177,7 +177,7 @@ end
 function lib.moveAllItems(fromInv, toInv, onProgress)
     local ok, raw = pcall(fromInv.peripheral.list)
     if not ok or not raw then
-        return { total = 0, totalOriginal = 0, slots = 0, totalSlots = 0, items = {}, destFull = false }
+        return { total = 0, totalOriginal = 0, slots = 0, totalSlots = 0, items = {}, destFull = false, fullItems = {} }
     end
     local totalSlots, totalItems = 0, 0
     local summary = {}
@@ -192,52 +192,73 @@ function lib.moveAllItems(fromInv, toInv, onProgress)
         table.insert(slotList, { slot = slot, item = item })
     end
 
-    local processed, movidoTotal, destFull = 0, 0, false
-    for idx, entry in ipairs(slotList) do
+    local processed, movidoTotal = 0, 0
+    local itemFull = {}    -- tracks items that can't fit (per-item, not whole inv)
+    local destFull = false -- true only when ALL items fail (no space at all)
+    local consecutiveFails = 0
+
+    for _, entry in ipairs(slotList) do
         processed = processed + 1
         if onProgress then
             onProgress({
                 processed = processed, total = totalSlots,
                 moved = movidoTotal, totalItems = totalItems,
-                current = entry.item.name, destFull = destFull, summary = summary,
+                current = entry.item.name, destFull = destFull,
+                summary = summary, fullItems = itemFull,
             })
         end
-        local okM, result = pcall(fromInv.peripheral.pushItems, toInv.name, entry.slot, entry.item.count)
-        local moved = (okM and result) and result or 0
-        summary[entry.item.name].moved = summary[entry.item.name].moved + moved
-        if moved < entry.item.count then
-            summary[entry.item.name].failed = summary[entry.item.name].failed + (entry.item.count - moved)
-            if moved == 0 then destFull = true end
-        end
-        movidoTotal = movidoTotal + moved
-        if destFull then
-            local nextEntry = slotList[idx + 1]
-            if nextEntry then
-                local okN, rN = pcall(fromInv.peripheral.pushItems, toInv.name, nextEntry.slot, 1)
-                if not okN or not rN or rN == 0 then break
+
+        -- Skip items we already know can't fit
+        if itemFull[entry.item.name] then
+            summary[entry.item.name].failed = summary[entry.item.name].failed + entry.item.count
+        else
+            local okM, result = pcall(fromInv.peripheral.pushItems, toInv.name, entry.slot, entry.item.count)
+            local moved = (okM and result) and result or 0
+            summary[entry.item.name].moved = summary[entry.item.name].moved + moved
+            movidoTotal = movidoTotal + moved
+
+            if moved < entry.item.count then
+                summary[entry.item.name].failed = summary[entry.item.name].failed + (entry.item.count - moved)
+                if moved == 0 then
+                    -- This specific item can't fit, but others might
+                    itemFull[entry.item.name] = true
+                    consecutiveFails = consecutiveFails + 1
                 else
-                    destFull = false
-                    movidoTotal = movidoTotal + rN
-                    summary[nextEntry.item.name].moved = summary[nextEntry.item.name].moved + rN
-                    if rN < nextEntry.item.count then
-                        summary[nextEntry.item.name].failed = summary[nextEntry.item.name].failed + (nextEntry.item.count - rN)
-                    end
+                    consecutiveFails = 0
                 end
             else
+                consecutiveFails = 0
+            end
+
+            -- If many consecutive items fail, the inv is probably truly full
+            if consecutiveFails >= 5 then
+                destFull = true
+                -- Mark remaining items as failed
+                for j = processed + 1, #slotList do
+                    local rem = slotList[j]
+                    summary[rem.item.name].failed = summary[rem.item.name].failed + rem.item.count
+                end
                 break
             end
         end
         sleep(0.05)
     end
+
+    -- Build result list
     local itemList = {}
+    local fullItemList = {}
     for name, data in pairs(summary) do
         table.insert(itemList, { name = name, moved = data.moved, failed = data.failed })
+        if itemFull[name] then
+            table.insert(fullItemList, lib.shortName(name))
+        end
     end
     table.sort(itemList, function(a, b) return a.moved > b.moved end)
     return {
         total = movidoTotal, totalOriginal = totalItems,
         slots = processed, totalSlots = totalSlots,
         items = itemList, destFull = destFull,
+        fullItems = fullItemList,
     }
 end
 

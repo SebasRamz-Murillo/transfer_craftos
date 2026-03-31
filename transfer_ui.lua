@@ -499,17 +499,45 @@ function scr14.bulk_result(ctx)
     ctx:header("Result")
     local r = ctx.nav.bulkResult
     local y = 2
+    local hasFullItems = r.fullItems and #r.fullItems > 0
     if r.destFull then
+        ctx:fill(2, y, ctx.W - 2, 2, colors.red)
+        ctx:write(3, y, "INV FULL " .. r.total .. "/" .. r.totalOriginal, colors.white, colors.red)
+    elseif hasFullItems then
         ctx:fill(2, y, ctx.W - 2, 2, colors.orange)
-        ctx:write(3, y, "FULL " .. r.total .. "/" .. r.totalOriginal, colors.white, colors.orange)
+        ctx:write(3, y, "PARCIAL " .. r.total .. "/" .. r.totalOriginal, colors.white, colors.orange)
     elseif r.total > 0 then
         ctx:fill(2, y, ctx.W - 2, 2, colors.green)
         ctx:write(3, y, "OK " .. r.total .. " items", colors.white, colors.green)
     else
         ctx:fill(2, y, ctx.W - 2, 2, colors.red)
-        ctx:write(3, y, "FAIL", colors.white, colors.red)
+        ctx:write(3, y, "FAIL 0 items", colors.white, colors.red)
     end
     y = y + 2
+
+    -- Show items that need more space in destination
+    if hasFullItems then
+        ctx:fill(2, y, ctx.W - 2, 1, colors.yellow)
+        ctx:write(3, y, "SIN ESPACIO:", colors.black, colors.yellow)
+        y = y + 1
+        local maxFull = math.min(#r.fullItems, 3)
+        for i = 1, maxFull do
+            local nm = r.fullItems[i]
+            if #nm > ctx.W - 4 then nm = nm:sub(1, ctx.W - 6) .. ".." end
+            ctx:write(3, y, nm, colors.red, colors.black)
+            y = y + 1
+        end
+        if #r.fullItems > maxFull then
+            ctx:write(3, y, "+" .. (#r.fullItems - maxFull) .. " mas", colors.gray, colors.black)
+            y = y + 1
+        end
+        ctx:write(2, y, "Ampliar destino para", colors.yellow, colors.black)
+        y = y + 1
+        ctx:write(2, y, "estos items", colors.yellow, colors.black)
+        y = y + 1
+    end
+
+    -- Item detail list
     local maxD = math.min(#r.items, ctx.H - y - 3)
     for i = 1, maxD do
         local it = r.items[i]
@@ -520,6 +548,7 @@ function scr14.bulk_result(ctx)
         ctx:write(ctx.W - #mv - 1, y, mv, it.failed > 0 and colors.orange or colors.lime, colors.black)
         y = y + 1
     end
+
     y = ctx.H - 2
     ctx:btn(2, y, ctx.W - 2, 2, "BACK", colors.white, colors.blue, function()
         ctx.nav.screen = "menu"; ctx.nav.history = {}; ctx.nav.fromInv = nil; ctx.nav.toInv = nil
@@ -1430,14 +1459,34 @@ function ui.processPending()
                 if #cur > ctx.W - 6 then cur = cur:sub(1, ctx.W - 8) .. ".." end
                 ctx:write(2, 7, cur, colors.cyan, colors.black)
             end
+            -- Show per-item full warnings
+            local fy = 8
+            if prog.fullItems then
+                local count = 0
+                for name in pairs(prog.fullItems) do
+                    if fy < ctx.H - 2 then
+                        local nm = lib.shortName(name)
+                        if #nm > ctx.W - 6 then nm = nm:sub(1, ctx.W - 8) .. ".." end
+                        ctx:write(2, fy, "!" .. nm, colors.orange, colors.black)
+                        fy = fy + 1
+                        count = count + 1
+                        if count >= 3 then break end
+                    end
+                end
+            end
             if prog.destFull then
-                ctx:fill(2, 8, ctx.W - 2, 1, colors.red)
-                ctx:write(3, 8, "FULL!", colors.white, colors.red)
+                ctx:fill(2, fy, ctx.W - 2, 1, colors.red)
+                ctx:write(3, fy, "INV FULL!", colors.white, colors.red)
             end
             ctx:footer("Wait...")
         end)
         action.ctx.nav.bulkResult = result
-        lib.tLog("OK: " .. lib.getAlias(action.fromInv.name) .. " -> " .. result.total .. " items")
+        local bulkMsg = result.total .. " items -> " .. lib.getAlias(action.toInv.name)
+        if result.fullItems and #result.fullItems > 0 then
+            lib.tLog("[EMPTY] " .. bulkMsg .. " (" .. #result.fullItems .. " sin espacio)")
+        else
+            lib.tLog("[EMPTY] OK: " .. bulkMsg)
+        end
         for _, item in ipairs(result.items) do
             if item.moved > 0 then lib.addHistory(action.fromInv.name, action.toInv.name, item.name, item.moved + item.failed, item.moved) end
         end
