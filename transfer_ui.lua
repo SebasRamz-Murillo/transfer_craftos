@@ -1293,8 +1293,9 @@ local function renderDashboard(ctx)
         local used, total = lib.getInventoryFill(inv)
         local pct = total > 0 and math.floor(used / total * 100) or 0
         local name = lib.getAlias(inv.name):sub(1, 10)
+        local shortName = (inv.name:match(":(.+)") or inv.name):sub(1, 10)
         local col = pct > 90 and colors.red or (pct > 60 and colors.orange or colors.green)
-        ctx:write(2, y, name .. " " .. pct .. "%", col, colors.black)
+        ctx:write(2, y, shortName .. " " .. pct .. "%", col, colors.black)
         y = y + 1
     end
 
