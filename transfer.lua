@@ -137,7 +137,9 @@ local function main()
     lib.tLog("Inventarios: " .. #st.inventories)
     lib.tLog("Reglas: " .. #st.rules)
     lib.tLog("Tareas: " .. tasks.count())
-    lib.tLog("Labels: " .. #st.labels .. " Aliases: " .. (function() local n=0; for _ in pairs(st.aliases) do n=n+1 end; return n end)())
+    local aliasCount = 0
+    for _ in pairs(st.aliases) do aliasCount = aliasCount + 1 end
+    lib.tLog("Labels: " .. #st.labels .. " Aliases: " .. aliasCount)
 
     -- Init monitors
     ui.init()

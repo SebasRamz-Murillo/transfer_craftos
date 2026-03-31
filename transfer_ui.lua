@@ -218,7 +218,7 @@ end
 
 local function compKeyboard(ctx, onConfirm)
     local n = ctx.nav
-    local keys = { "A B C D E F G", "H I J K L M N", "O P Q R S T U", "V W X Y Z _" }
+    local keys = { "A B C D E F G", "H I J K L M N", "O P Q R S T U", "V W X Y Z _", "1 2 3 4 5 6 7", "8 9 0" }
     local y = ctx.H - 7
     ctx:fill(2, y - 2, ctx.W - 2, 1, colors.gray)
     local disp = n.searchText == "" and "Buscar..." or n.searchText
@@ -667,7 +667,7 @@ function scr14.wk_running(ctx)
     else
         ctx:btn(2, by, math.floor(ctx.W / 2) - 1, 2, "RES", colors.black, colors.lime, function() worker.resume() end)
         ctx:btn(math.floor(ctx.W / 2) + 1, by, math.floor(ctx.W / 2) - 1, 2, "STOP", colors.white, colors.red, function()
-            ctx:goTo("wk_stopped")
+            worker.stop(); ctx:goTo("wk_stopped")
         end)
     end
 end
@@ -727,6 +727,7 @@ function scr10.tasks_list(ctx)
     local ei = math.min(n.page * n.perPage, #st.tasks)
     for i = si, ei do
         if y + 2 > ctx.H - 2 then break end
+        local idx = i  -- capture index for closures
         local t = st.tasks[i]
         local bg = t.enabled and colors.gray or colors.brown
         local sc = colors.lightGray
@@ -742,12 +743,10 @@ function scr10.tasks_list(ctx)
         ctx:write(3, y + 1, tp .. "|" .. lp .. "|" .. t.status:sub(1, 1), colors.yellow, bg)
         local bw = 4
         ctx:btn(ctx.W - 10, y, bw, 2, t.enabled and "ON" or "OF", colors.white, t.enabled and colors.green or colors.red, function()
-            tasks.toggle(i)
+            tasks.toggle(idx)
         end)
         ctx:btn(ctx.W - 5, y, 4, 2, "X", colors.white, colors.red, function()
-            table.remove(st.tasks, i)
-            tasks.save()
-            lib.tLog("Tarea eliminada")
+            tasks.delete(idx)
         end)
         y = y + 3
     end
@@ -865,6 +864,7 @@ function scr10.rules_list(ctx)
     local y = 4
     for i, rule in ipairs(st.rules) do
         if y + 2 > ctx.H - 2 then break end
+        local idx = i  -- capture index for closures
         local si2 = rule.item == "*" and "ALL" or sn(rule.item)
         if #si2 > ctx.W - 14 then si2 = si2:sub(1, ctx.W - 16) .. ".." end
         local bg = rule.enabled and colors.gray or colors.brown
@@ -872,10 +872,10 @@ function scr10.rules_list(ctx)
         ctx:write(3, y, si2, colors.white, bg)
         ctx:write(3, y + 1, rule.interval .. "s", colors.yellow, bg)
         ctx:btn(ctx.W - 9, y, 4, 2, rule.enabled and "ON" or "OF", colors.white, rule.enabled and colors.green or colors.red, function()
-            rule.enabled = not rule.enabled; lib.saveRules()
+            st.rules[idx].enabled = not st.rules[idx].enabled; lib.saveRules()
         end)
         ctx:btn(ctx.W - 4, y, 4, 2, "X", colors.white, colors.red, function()
-            table.remove(st.rules, i)
+            table.remove(st.rules, idx)
             lib.saveRules()
             lib.tLog("Regla eliminada")
         end)
@@ -1286,7 +1286,8 @@ local function renderDashboard(ctx)
 
     local y = 2
 
-    -- Inventarios - condensed
+    -- Inventarios - condensed (uses cached fill data)
+    lib.refreshFillCache()
     ctx:write(2, y, "INV", colors.yellow, colors.black); y = y + 1
     for i, inv in ipairs(st.inventories) do
         if y >= ctx.H - 3 then break end

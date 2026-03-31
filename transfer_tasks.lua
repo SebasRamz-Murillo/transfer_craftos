@@ -15,9 +15,7 @@ function tasks.save()
             loop = t.loop, enabled = t.enabled, priority = t.priority,
         })
     end
-    local f = fs.open(lib.TASKS_FILE, "w")
-    f.write(textutils.serialise(data))
-    f.close()
+    lib.safeWrite(lib.TASKS_FILE, data)
 end
 
 function tasks.load()
@@ -117,7 +115,7 @@ function tasks.execute(t)
             end
         end
     else
-        local qty = t.cantidad == 0 and 99999 or t.cantidad
+        local qty = t.cantidad == 0 and lib.MAX_QUANTITY or t.cantidad
         moved = lib.moveItems(fromP, t.to, t.item, qty)
     end
     t.lastRun = os.clock()

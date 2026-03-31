@@ -10,6 +10,7 @@ lib.TASKS_FILE   = "transfer_tasks.dat"
 lib.HISTORY_FILE = "transfer_history.dat"
 lib.LABELS_FILE  = "transfer_labels.dat"
 lib.MAX_HISTORY  = 100
+lib.MAX_QUANTITY = 99999
 
 lib.MON_IDS = {
     control   = "monitor_14",
@@ -125,7 +126,28 @@ function lib.getItems(inv)
     return items
 end
 
+-- Cached inventory fill for dashboard (avoids repeated peripheral calls)
+lib._fillCache = {}
+lib._fillCacheTime = 0
+lib.FILL_CACHE_TTL = 5  -- seconds
+
+function lib.refreshFillCache()
+    local now = os.clock()
+    if now - lib._fillCacheTime < lib.FILL_CACHE_TTL then return end
+    lib._fillCacheTime = now
+    for _, inv in ipairs(lib.state.inventories) do
+        local ok, raw = pcall(inv.peripheral.list)
+        local used = 0
+        if ok and raw then
+            for _ in pairs(raw) do used = used + 1 end
+        end
+        lib._fillCache[inv.name] = { used = used, size = inv.size }
+    end
+end
+
 function lib.getInventoryFill(inv)
+    local cached = lib._fillCache[inv.name]
+    if cached then return cached.used, cached.size end
     local ok, raw = pcall(inv.peripheral.list)
     if not ok or not raw then return 0, inv.size end
     local used = 0
@@ -164,36 +186,45 @@ function lib.moveAllItems(fromInv, toInv, onProgress)
         totalItems = totalItems + item.count
         if not summary[item.name] then summary[item.name] = { moved = 0, failed = 0 } end
     end
-    local processed, movidoTotal, destFull = 0, 0, false
+    -- Build ordered slot list to avoid next() inside pairs() issues
+    local slotList = {}
     for slot, item in pairs(raw) do
+        table.insert(slotList, { slot = slot, item = item })
+    end
+
+    local processed, movidoTotal, destFull = 0, 0, false
+    for idx, entry in ipairs(slotList) do
         processed = processed + 1
         if onProgress then
             onProgress({
                 processed = processed, total = totalSlots,
                 moved = movidoTotal, totalItems = totalItems,
-                current = item.name, destFull = destFull, summary = summary,
+                current = entry.item.name, destFull = destFull, summary = summary,
             })
         end
-        local okM, result = pcall(fromInv.peripheral.pushItems, toInv.name, slot, item.count)
+        local okM, result = pcall(fromInv.peripheral.pushItems, toInv.name, entry.slot, entry.item.count)
         local moved = (okM and result) and result or 0
-        summary[item.name].moved = summary[item.name].moved + moved
-        if moved < item.count then
-            summary[item.name].failed = summary[item.name].failed + (item.count - moved)
+        summary[entry.item.name].moved = summary[entry.item.name].moved + moved
+        if moved < entry.item.count then
+            summary[entry.item.name].failed = summary[entry.item.name].failed + (entry.item.count - moved)
             if moved == 0 then destFull = true end
         end
         movidoTotal = movidoTotal + moved
         if destFull then
-            local ns, ni = next(raw, slot)
-            if ns then
-                local okN, rN = pcall(fromInv.peripheral.pushItems, toInv.name, ns, 1)
+            local nextEntry = slotList[idx + 1]
+            if nextEntry then
+                local okN, rN = pcall(fromInv.peripheral.pushItems, toInv.name, nextEntry.slot, 1)
                 if not okN or not rN or rN == 0 then break
                 else
                     destFull = false
                     movidoTotal = movidoTotal + rN
-                    summary[ni.name].moved = summary[ni.name].moved + rN
-                    if rN < ni.count then summary[ni.name].failed = summary[ni.name].failed + (ni.count - rN) end
-                    processed = processed + 1
+                    summary[nextEntry.item.name].moved = summary[nextEntry.item.name].moved + rN
+                    if rN < nextEntry.item.count then
+                        summary[nextEntry.item.name].failed = summary[nextEntry.item.name].failed + (nextEntry.item.count - rN)
+                    end
                 end
+            else
+                break
             end
         end
         sleep(0.05)
@@ -232,10 +263,19 @@ end
 --  Historial
 -- ============================================================
 
-function lib.saveHistory()
-    local f = fs.open(lib.HISTORY_FILE, "w")
-    f.write(textutils.serialise(lib.state.history))
+function lib.safeWrite(path, data)
+    local f = fs.open(path, "w")
+    if not f then
+        lib.tLog("ERROR: No se pudo escribir " .. path)
+        return false
+    end
+    f.write(textutils.serialise(data))
     f.close()
+    return true
+end
+
+function lib.saveHistory()
+    lib.safeWrite(lib.HISTORY_FILE, lib.state.history)
 end
 
 function lib.loadHistory()
@@ -264,9 +304,7 @@ end
 -- ============================================================
 
 function lib.saveRules()
-    local f = fs.open(lib.RULES_FILE, "w")
-    f.write(textutils.serialise(lib.state.rules))
-    f.close()
+    lib.safeWrite(lib.RULES_FILE, lib.state.rules)
 end
 
 function lib.loadRules()
@@ -293,7 +331,7 @@ function lib.executeRule(rule)
             end
         end
     else
-        total = lib.moveItems(fromP, rule.to, rule.item, rule.cantidad == 0 and 99999 or rule.cantidad)
+        total = lib.moveItems(fromP, rule.to, rule.item, rule.cantidad == 0 and lib.MAX_QUANTITY or rule.cantidad)
     end
     return total
 end
@@ -386,9 +424,7 @@ end
 
 function lib.saveLabels()
     local data = { labels = lib.state.labels, aliases = lib.state.aliases }
-    local f = fs.open(lib.LABELS_FILE, "w")
-    f.write(textutils.serialise(data))
-    f.close()
+    lib.safeWrite(lib.LABELS_FILE, data)
 end
 
 function lib.loadLabels()
