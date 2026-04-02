@@ -1,5 +1,5 @@
 -- ============================================================
---  transfer.lua  v5.2
+--  transfer.lua  v5.3
 --  Main: carga modulos, inicia 5 monitores, loops en paralelo
 --
 --  Monitores:
@@ -13,8 +13,9 @@
 local lib    = require("transfer_lib")
 local tasks  = require("transfer_tasks")
 local worker = require("transfer_worker")
-local alerts = require("transfer_alerts")
-local ui     = require("transfer_ui")
+local alerts  = require("transfer_alerts")
+local restock = require("transfer_restock")
+local ui      = require("transfer_ui")
 
 local st = lib.state
 
@@ -135,12 +136,20 @@ local function main()
     lib.refreshInventories()
 
     alerts.load()
+    restock.load()
+    lib.loadAudit()
 
-    lib.tLog("Transfer v5.2 Multi-Monitor")
+    -- Lock screen if PIN set
+    if st.lockPin then
+        st.locked = true
+    end
+
+    lib.tLog("Transfer v5.3 Multi-Monitor")
     lib.tLog("Inventarios: " .. #st.inventories)
     lib.tLog("Reglas: " .. #st.rules)
     lib.tLog("Tareas: " .. tasks.count())
     lib.tLog("Alertas: " .. alerts.count())
+    lib.tLog("Restock: " .. restock.count())
     local aliasCount = 0
     for _ in pairs(st.aliases) do aliasCount = aliasCount + 1 end
     lib.tLog("Labels: " .. #st.labels .. " Aliases: " .. aliasCount)
@@ -182,6 +191,7 @@ local function main()
         logEventLoop,
         actionLoop,
         alerts.loop,
+        restock.loop,
         disconnectLoop
     )
 

@@ -11,6 +11,9 @@ lib.HISTORY_FILE = "transfer_history.dat"
 lib.LABELS_FILE  = "transfer_labels.dat"
 lib.MAX_HISTORY  = 100
 lib.MAX_QUANTITY = 99999
+lib.RESTOCK_FILE = "transfer_restock.dat"
+lib.AUDIT_FILE   = "transfer_audit.dat"
+lib.MAX_AUDIT    = 500
 
 lib.MON_IDS = {
     control   = "monitor_14",
@@ -51,6 +54,11 @@ lib.state = {
     favorites    = {},     -- { [invName] = true, ... }
     compactMode  = false,
     disconnected = {},     -- { [invName] = true, ... }
+    categories = {},    -- { [invName] = "ENTRADA"|"ALMACEN"|"PRODUCCION"|"SALIDA" }
+    auditLog   = {},    -- persistent audit trail
+    lockPin    = nil,   -- nil = no lock, "1234" = PIN enabled
+    locked     = false, -- current lock state
+    restocks   = {},    -- auto-restock rules (managed by transfer_restock.lua)
 }
 
 -- ============================================================
@@ -354,6 +362,7 @@ function lib.addHistory(from, to, item, requested, moved)
     lib.state.totalTransfers = lib.state.totalTransfers + 1
     lib.state.totalMoved = lib.state.totalMoved + moved
     lib.recordMovement(item, moved)
+    lib.audit("TRANSFER", { from = from, to = to, item = item, moved = moved })
 end
 
 -- ============================================================
@@ -498,6 +507,8 @@ function lib.saveLabels()
         aliases     = lib.state.aliases,
         favorites   = lib.state.favorites,
         compactMode = lib.state.compactMode,
+        categories  = lib.state.categories,
+        lockPin     = lib.state.lockPin,
     }
     lib.safeWrite(lib.LABELS_FILE, data)
 end
@@ -512,6 +523,8 @@ function lib.loadLabels()
             lib.state.aliases     = d.aliases or {}
             lib.state.favorites   = d.favorites or {}
             lib.state.compactMode = d.compactMode or false
+            lib.state.categories  = d.categories or {}
+            lib.state.lockPin     = d.lockPin or nil
         end
     end
 end
@@ -689,6 +702,31 @@ function lib.isFavorite(invName)
 end
 
 -- ============================================================
+--  Categories
+-- ============================================================
+
+lib.CATEGORIES = { "ENTRADA", "ALMACEN", "PRODUCCION", "SALIDA" }
+lib.CATEGORY_COLORS = {
+    ENTRADA    = colors.lime,
+    ALMACEN    = colors.blue,
+    PRODUCCION = colors.orange,
+    SALIDA     = colors.red,
+}
+
+function lib.setCategory(invName, cat)
+    if cat and cat ~= "" then
+        lib.state.categories[invName] = cat
+    else
+        lib.state.categories[invName] = nil
+    end
+    lib.saveLabels()
+end
+
+function lib.getCategory(invName)
+    return lib.state.categories[invName]
+end
+
+-- ============================================================
 --  Undo
 -- ============================================================
 
@@ -757,6 +795,84 @@ function lib.checkDisconnected()
         end
     end
     return lib.state.disconnected
+end
+
+-- ============================================================
+--  Audit Log
+-- ============================================================
+
+function lib.saveAudit()
+    lib.safeWrite(lib.AUDIT_FILE, lib.state.auditLog)
+end
+
+function lib.loadAudit()
+    if fs.exists(lib.AUDIT_FILE) then
+        local f = fs.open(lib.AUDIT_FILE, "r")
+        if f then
+            local d = textutils.unserialise(f.readAll())
+            f.close()
+            if d then lib.state.auditLog = d end
+        end
+    end
+end
+
+function lib.audit(action, details)
+    local entry = {
+        action  = action,
+        time    = textutils.formatTime(os.time(), true),
+        day     = os.day(),
+        details = details or {},
+    }
+    table.insert(lib.state.auditLog, 1, entry)
+    if #lib.state.auditLog > lib.MAX_AUDIT then table.remove(lib.state.auditLog) end
+    lib.saveAudit()
+end
+
+-- ============================================================
+--  KPI helpers
+-- ============================================================
+
+function lib.getItemsPerHour()
+    return lib.getItemsPerMinute() * 60
+end
+
+function lib.getStorageUtilization()
+    lib.refreshFillCache()
+    local totalUsed, totalSize = 0, 0
+    for _, inv in ipairs(lib.state.inventories) do
+        local used, size = lib.getInventoryFill(inv)
+        totalUsed = totalUsed + used
+        totalSize = totalSize + size
+    end
+    if totalSize == 0 then return 0 end
+    return math.floor(totalUsed / totalSize * 100)
+end
+
+-- ============================================================
+--  Lock helpers
+-- ============================================================
+
+function lib.setPin(pin)
+    if pin and #pin == 4 then
+        lib.state.lockPin = pin
+    else
+        lib.state.lockPin = nil
+    end
+    lib.saveLabels()
+end
+
+function lib.checkPin(pin)
+    return lib.state.lockPin == pin
+end
+
+function lib.lock()
+    if lib.state.lockPin then
+        lib.state.locked = true
+    end
+end
+
+function lib.unlock()
+    lib.state.locked = false
 end
 
 return lib

@@ -1,15 +1,15 @@
 -- ============================================================
---  transfer_ui.lua  v5.2
+--  transfer_ui.lua  v5.3
 --  Sistema multi-monitor con contextos independientes.
 --  5 monitores: 3 interactivos (3x3) + 2 dashboards (2x7)
---  New: alerts UI, undo, delete confirm, favorites, schedule,
---       compact mode, pattern input, enhanced dashboards
+--  Enterprise: restock, categories, audit, lock, quick send, KPIs
 -- ============================================================
 
-local lib    = require("transfer_lib")
-local tasks  = require("transfer_tasks")
-local worker = require("transfer_worker")
-local alerts = require("transfer_alerts")
+local lib     = require("transfer_lib")
+local tasks   = require("transfer_tasks")
+local worker  = require("transfer_worker")
+local alerts  = require("transfer_alerts")
+local restock = require("transfer_restock")
 
 local ui = {}
 local st = lib.state
@@ -194,7 +194,12 @@ local function compSelectInv(ctx, title, onSelect, filterOut)
         local pct = total > 0 and math.floor(used / total * 100) or 0
         local fillCol = pct > 90 and colors.red or (pct > 60 and colors.orange or colors.lightGray)
         ctx:write(ctx.W - 8, y, pct .. "% " .. total .. "s", fillCol, bg)
-        -- Disconnect indicator
+        -- Category tag + Disconnect indicator
+        local cat = lib.getCategory(inv.name)
+        if cat then
+            local catCol = lib.CATEGORY_COLORS[cat] or colors.lightGray
+            ctx:write(3, y + 1, cat:sub(1, 3), catCol, bg)
+        end
         if st.disconnected[inv.name] then
             ctx:write(ctx.W - 2, y + 1, "DC", colors.red, bg)
         end
@@ -395,6 +400,19 @@ local HELP_PAGES = {
             "Util para saber cuando",
             "falta material.",
         }},
+        { title = "RESTOCK", lines = {
+            "RESTOCK: Mantiene stock",
+            "automaticamente.",
+            "",
+            "Define MIN y MAX para",
+            "un item en un inventario.",
+            "Cuando baja del minimo,",
+            "busca en otros inv y",
+            "llena hasta el maximo.",
+            "",
+            "Ideal para maquinas que",
+            "consumen materiales.",
+        }},
         { title = "SCHEDULE", lines = {
             "Las tareas pueden tener",
             "un horario de Minecraft.",
@@ -451,6 +469,51 @@ local HELP_PAGES = {
             "  Favorites: Marca inv",
             "  para que aparezcan",
             "  primero en las listas.",
+        }},
+        { title = "QUICK SEND", lines = {
+            "QUICK SEND: Desde Browse",
+            "toca >> junto a un item",
+            "para enviarlo directo a",
+            "otro inventario.",
+            "",
+            "Elige cantidad y destino",
+            "sin salir de la vista",
+            "de inventario.",
+        }},
+        { title = "CATEGORIES", lines = {
+            "CATEGORIES: Clasifica tus",
+            "inventarios en zonas:",
+            "",
+            "  ENT = Entrada",
+            "  ALM = Almacen",
+            "  PRO = Produccion",
+            "  SAL = Salida",
+            "",
+            "Se muestra con color en",
+            "listas y dashboard.",
+        }},
+        { title = "AUDIT LOG", lines = {
+            "AUDIT: Registro permanente",
+            "de todas las operaciones.",
+            "Sobrevive reinicios.",
+            "",
+            "Filtra por tipo:",
+            "  XFER, TASK, RSTK, ALRT",
+            "",
+            "Mantiene las ultimas 500",
+            "entradas en disco.",
+        }},
+        { title = "LOCK / PIN", lines = {
+            "LOCK: Protege el sistema",
+            "con un PIN de 4 digitos.",
+            "",
+            "Configurar en SETTINGS >",
+            "SET PIN. Cuando se activa",
+            "bloquea todos los",
+            "monitores.",
+            "",
+            "Desbloquea ingresando el",
+            "PIN en monitor CONTROL.",
         }},
     },
 }
@@ -999,8 +1062,16 @@ function scr10.menu(ctx)
     local alertColor = triggered > 0 and colors.red or colors.orange
     local alertLabel = "ALERTS(" .. astats .. ")"
     if triggered > 0 then alertLabel = alertLabel .. " !" .. triggered end
-    ctx:btn(2, y, ctx.W - 2, 2, alertLabel, colors.white, alertColor, function()
+    local hw = math.floor((ctx.W - 3) / 2)
+    ctx:btn(2, y, hw, 2, alertLabel, colors.white, alertColor, function()
         ctx:goTo("alerts_list")
+    end)
+    -- Restock button
+    local rLabel = "RESTOCK(" .. restock.count() .. ")"
+    local pulling = restock.countPulling()
+    local rColor = pulling > 0 and colors.lime or colors.cyan
+    ctx:btn(2 + hw + 1, y, hw, 2, rLabel, colors.white, rColor, function()
+        ctx:goTo("restock_list")
     end); y = y + 3
     ctx:btn(2, y, ctx.W - 2, 1, "REFRESH INV", colors.black, colors.lightGray, function()
         lib.refreshInventories()
@@ -1086,6 +1157,9 @@ function scr10.confirm_delete(ctx)
         elseif n._deleteType == "alert" then
             alerts.delete(n._deleteIdx)
             n.screen = "alerts_list"; n.history = {}; n.page = 1
+        elseif n._deleteType == "restock" then
+            restock.delete(n._deleteIdx)
+            n.screen = "restock_list"; n.history = {}; n.page = 1
         end
         n._deleteIdx = nil; n._deleteType = nil; n._deleteName = nil
     end)
@@ -1917,6 +1991,178 @@ function scr10.alert_redstone(ctx)
 end
 
 -- ============================================================
+-- Restock management
+-- ============================================================
+
+function scr10.restock_list(ctx)
+    ctx:header("Restock")
+    ctx:btn(2, 2, ctx.W - 2, 1, "+NEW RESTOCK", colors.white, colors.green, function()
+        lib.refreshInventories(); ctx:goTo("restock_inv")
+    end)
+    if restock.count() == 0 then
+        ctx:write(2, 4, "No restock rules", colors.gray, colors.black)
+        ctx:footer("Mantener stock auto")
+        return
+    end
+    local y = 4; local n = ctx.nav
+    local rs = st.restocks
+    local si = (n.page - 1) * n.perPage + 1
+    local ei = math.min(n.page * n.perPage, #rs)
+    for i = si, ei do
+        if y + 2 > ctx.H - 2 then break end
+        local idx = i
+        local r = rs[i]
+        local itemName = sn(r.item)
+        if #itemName > ctx.W - 16 then itemName = itemName:sub(1, ctx.W - 18) .. ".." end
+        local statusCol = colors.gray
+        if r.status == "satisfied" then statusCol = colors.green
+        elseif r.status == "pulling" then statusCol = colors.yellow
+        elseif r.status == "error" then statusCol = colors.red end
+        local bg = r.enabled and colors.gray or colors.brown
+        ctx:fill(2, y, ctx.W - 10, 2, bg)
+        ctx:write(3, y, itemName, colors.white, bg)
+        local inv = lib.getAlias(r.inventory):sub(1, 8)
+        ctx:write(3, y + 1, r.minStock .. "-" .. r.maxStock .. " " .. inv, statusCol, bg)
+        if r.lastPulled > 0 then
+            ctx:write(ctx.W - 14, y, "+" .. r.lastPulled, colors.lime, bg)
+        end
+        ctx:btn(ctx.W - 9, y, 4, 2, r.enabled and "ON" or "OF", colors.white, r.enabled and colors.green or colors.red, function()
+            restock.toggle(idx)
+        end)
+        ctx:btn(ctx.W - 4, y, 4, 2, "X", colors.white, colors.red, function()
+            ctx.nav._deleteIdx = idx
+            ctx.nav._deleteType = "restock"
+            ctx.nav._deleteName = itemName
+            ctx:goTo("confirm_delete")
+        end)
+        y = y + 3
+    end
+    ctx:paginate(#rs)
+    local pulling = restock.countPulling()
+    local footerText = #rs .. " rules"
+    if pulling > 0 then footerText = footerText .. " | " .. pulling .. " active" end
+    ctx:footer(footerText)
+end
+
+-- Restock creation: pick target inventory
+function scr10.restock_inv(ctx)
+    compSelectInv(ctx, "Restock: Inventario", function(inv)
+        ctx.nav._restockInv = inv.name
+        ctx.nav.items = lib.getItems(inv)
+        ctx.nav.searchText = ""; lib.applyFilter(ctx.nav)
+        ctx:goTo("restock_item")
+    end)
+end
+
+-- Restock: pick item
+function scr10.restock_item(ctx)
+    ctx:header("Restock: Item")
+    local n = ctx.nav
+    -- Pattern button
+    ctx:btn(2, 2, math.floor(ctx.W / 2) - 1, 1, "PATTERN", colors.black, colors.yellow, function()
+        n.searchText = ""
+        ctx:goTo("restock_pattern")
+    end)
+    ctx:btn(ctx.W - 8, 2, 8, 1, "BUSCAR", colors.white, colors.orange, function()
+        n.screen = "restock_item_search"
+    end)
+    local di = n.filteredItems
+    if #di == 0 then
+        ctx:write(2, 4, n.searchText ~= "" and "Sin res." or "Vacio", colors.orange, colors.black)
+        return
+    end
+    local pp = n.perPage
+    local si = (n.page - 1) * pp + 1
+    local ei = math.min(n.page * pp, #di)
+    local y = 3
+    for i = si, ei do
+        local item = di[i]
+        local sname = item.name:match(":(.+)") or item.name
+        if #sname > ctx.W - 8 then sname = sname:sub(1, ctx.W - 10) .. ".." end
+        local bg = (i % 2 == 0) and colors.blue or colors.gray
+        ctx:btn(2, y, ctx.W - 2, 2, "", colors.white, bg, function()
+            n._restockItem = item.name
+            n._restockMin = 16
+            n._restockMax = 64
+            ctx:goTo("restock_config")
+        end)
+        ctx:write(4, y, sname .. " x" .. item.total, colors.white, bg)
+        y = y + 3
+    end
+    ctx:paginate(#di)
+    ctx:footer(#di .. " items")
+end
+
+function scr10.restock_pattern(ctx)
+    ctx:header("Pattern")
+    local n = ctx.nav
+    ctx:write(2, 2, "Ej: *ingot* *ore*", colors.gray, colors.black)
+    compKeyboard(ctx, function()
+        if n.searchText ~= "" then
+            n._restockItem = n.searchText
+            n._restockMin = 16
+            n._restockMax = 64
+            n.searchText = ""
+            ctx:goTo("restock_config")
+        end
+    end)
+end
+
+function scr10.restock_item_search(ctx)
+    ctx:header("Buscar Item")
+    local n = ctx.nav; local y = 4
+    for i = 1, math.min(3, #n.filteredItems) do
+        ctx:write(3, y, sn(n.filteredItems[i].name) .. " x" .. n.filteredItems[i].total, colors.lightGray, colors.black)
+        y = y + 1
+    end
+    compKeyboard(ctx, function() n.screen = "restock_item" end)
+end
+
+-- Restock config: min/max thresholds
+function scr10.restock_config(ctx)
+    ctx:header("Restock: Config")
+    local n = ctx.nav
+    local y = 2
+    local itemDisp = sn(n._restockItem or "?")
+    if #itemDisp > ctx.W - 4 then itemDisp = itemDisp:sub(1, ctx.W - 6) .. ".." end
+    ctx:write(2, y, "Item: " .. itemDisp, colors.white, colors.black)
+    y = y + 1
+    ctx:write(2, y, "Inv: " .. lib.getAlias(n._restockInv or "?"):sub(1, ctx.W - 8), colors.cyan, colors.black)
+    y = y + 2
+    -- Min stock
+    ctx:fill(2, y, ctx.W - 2, 1, colors.gray)
+    ctx:write(3, y, "MIN: " .. n._restockMin, colors.yellow, colors.gray)
+    y = y + 1
+    local bw = math.floor((ctx.W - 4) / 4)
+    ctx:btn(2, y, bw, 1, "-1", colors.white, colors.red, function() n._restockMin = math.max(1, n._restockMin - 1) end)
+    ctx:btn(2 + bw, y, bw, 1, "-16", colors.white, colors.red, function() n._restockMin = math.max(1, n._restockMin - 16) end)
+    ctx:btn(2 + 2*bw, y, bw, 1, "+16", colors.white, colors.green, function() n._restockMin = n._restockMin + 16 end)
+    ctx:btn(2 + 3*bw, y, bw, 1, "+64", colors.white, colors.green, function() n._restockMin = n._restockMin + 64 end)
+    y = y + 2
+    -- Max stock
+    ctx:fill(2, y, ctx.W - 2, 1, colors.gray)
+    ctx:write(3, y, "MAX: " .. n._restockMax, colors.yellow, colors.gray)
+    y = y + 1
+    ctx:btn(2, y, bw, 1, "-1", colors.white, colors.red, function() n._restockMax = math.max(n._restockMin + 1, n._restockMax - 1) end)
+    ctx:btn(2 + bw, y, bw, 1, "-64", colors.white, colors.red, function() n._restockMax = math.max(n._restockMin + 1, n._restockMax - 64) end)
+    ctx:btn(2 + 2*bw, y, bw, 1, "+64", colors.white, colors.green, function() n._restockMax = n._restockMax + 64 end)
+    ctx:btn(2 + 3*bw, y, bw, 1, "+256", colors.white, colors.green, function() n._restockMax = n._restockMax + 256 end)
+    y = y + 2
+    -- Create
+    ctx:btn(2, y, ctx.W - 2, 1, "CREATE RESTOCK", colors.black, colors.lime, function()
+        restock.create({
+            inventory = n._restockInv,
+            item = n._restockItem,
+            minStock = n._restockMin,
+            maxStock = n._restockMax,
+        })
+        lib.audit("RESTOCK_CREATE", { item = n._restockItem, inv = n._restockInv, min = n._restockMin, max = n._restockMax })
+        n.screen = "restock_list"; n.history = {}; n.page = 1
+        n._restockInv = nil; n._restockItem = nil
+    end)
+end
+
+-- ============================================================
 --  MONITOR 13: INVENTARIO (3x3, interactivo)
 --  Explorar inventarios, buscar items, historial, favorites
 -- ============================================================
@@ -1962,6 +2208,12 @@ function scr13.menu(ctx)
     ctx:btn(2, y, hw, 2, "LABELS", colors.black, colors.yellow, function()
         ctx:goTo("labels_menu")
     end)
+    ctx:btn(2 + hw + 1, y, hw, 2, "AUDIT", colors.white, colors.purple, function()
+        ctx:goTo("audit_log")
+    end); y = y + 3
+    ctx:btn(2, y, hw, 2, "CATEGORIES", colors.white, colors.blue, function()
+        lib.refreshInventories(); ctx:goTo("cat_list")
+    end)
     ctx:btn(2 + hw + 1, y, hw, 2, "SETTINGS", colors.white, colors.gray, function()
         ctx:goTo("settings")
     end)
@@ -1972,30 +2224,45 @@ end
 function scr13.settings(ctx)
     ctx:header("Settings")
     local y = 3
+    local hw = math.floor((ctx.W - 3) / 2)
     -- Compact mode
-    ctx:btn(2, y, ctx.W - 2, 1, "COMPACT: " .. (st.compactMode and "ON" or "OFF"), colors.white, st.compactMode and colors.green or colors.gray, function()
+    ctx:btn(2, y, hw, 1, "COMPACT:" .. (st.compactMode and "ON" or "OFF"), colors.white, st.compactMode and colors.green or colors.gray, function()
         st.compactMode = not st.compactMode
         lib.saveLabels()
     end)
+    -- Lock PIN
+    local lockLabel = st.lockPin and "LOCK:ON" or "LOCK:OFF"
+    ctx:btn(2 + hw + 1, y, hw, 1, lockLabel, colors.white, st.lockPin and colors.red or colors.gray, function()
+        ctx.nav._pinEntry = ""
+        ctx:goTo("pin_setup")
+    end)
     y = y + 2
-    -- Refresh
-    ctx:btn(2, y, ctx.W - 2, 1, "REFRESH INV", colors.black, colors.lightGray, function()
+    -- Favorites + Refresh
+    ctx:btn(2, y, hw, 1, "FAVORITES", colors.black, colors.yellow, function()
+        lib.refreshInventories(); ctx:goTo("favorites")
+    end)
+    ctx:btn(2 + hw + 1, y, hw, 1, "REFRESH", colors.black, colors.lightGray, function()
         lib.refreshInventories()
         lib.tLog("[SYS] Refresh: " .. #st.inventories .. " inv")
     end)
     y = y + 2
-    -- Favorites management
-    ctx:btn(2, y, ctx.W - 2, 1, "MANAGE FAVS", colors.black, colors.yellow, function()
-        lib.refreshInventories()
-        ctx:goTo("favorites")
-    end)
-    y = y + 2
+    -- Lock now button (if PIN is set)
+    if st.lockPin then
+        ctx:btn(2, y, ctx.W - 2, 1, "LOCK NOW", colors.white, colors.red, function()
+            lib.lock()
+            lib.tLog("[LOCK] System locked")
+            lib.audit("LOCK", {})
+        end)
+        y = y + 2
+    end
     -- Stats
     ctx:write(2, y, "Items/min: " .. lib.getItemsPerMinute(), colors.cyan, colors.black)
     y = y + 1
-    ctx:write(2, y, "Total XFR: " .. st.totalTransfers, colors.cyan, colors.black)
+    ctx:write(2, y, "Items/hour: " .. lib.getItemsPerHour(), colors.cyan, colors.black)
     y = y + 1
-    ctx:write(2, y, "Total Moved: " .. st.totalMoved, colors.cyan, colors.black)
+    ctx:write(2, y, "Storage: " .. lib.getStorageUtilization() .. "%", colors.cyan, colors.black)
+    y = y + 1
+    ctx:write(2, y, "XFR:" .. st.totalTransfers .. " Moved:" .. st.totalMoved, colors.cyan, colors.black)
 end
 
 -- Favorites toggle
@@ -2079,15 +2346,28 @@ function scr13.inv_detail(ctx)
         for i = si, ei do
             local item = di[i]
             local n2 = sn(item.name)
-            if #n2 > ctx.W - 8 then n2 = n2:sub(1, ctx.W - 10) .. ".." end
+            if #n2 > ctx.W - 12 then n2 = n2:sub(1, ctx.W - 14) .. ".." end
             local bg = (i % 2 == 0) and colors.blue or colors.gray
-            ctx:fill(2, y, ctx.W - 2, 2, bg)
+            -- Main item area (clickable for quick send)
+            ctx:btn(2, y, ctx.W - 7, 2, "", colors.white, bg, function()
+                ctx.nav.selectedItem = item
+                ctx.nav.cantidad = item.total
+                lib.refreshInventories()
+                ctx:goTo("send_qty")
+            end)
             ctx:write(3, y, n2 .. " x" .. item.total, colors.white, bg)
+            -- Send arrow button
+            ctx:btn(ctx.W - 4, y, 4, 2, ">>", colors.black, colors.lime, function()
+                ctx.nav.selectedItem = item
+                ctx.nav.cantidad = item.total
+                lib.refreshInventories()
+                ctx:goTo("send_qty")
+            end)
             y = y + 3
         end
         ctx:paginate(#di)
     end
-    ctx:footer(#di .. " items")
+    ctx:footer(#di .. " items | tap to send")
 end
 
 function scr13.search_all(ctx)
@@ -2342,25 +2622,367 @@ function scr13.rename_kb(ctx)
 end
 
 -- ============================================================
+-- Quick Send from browse: send item directly from inv_detail
+-- ============================================================
+
+function scr13.send_qty(ctx)
+    compQtySelector(ctx, "Enviar: Cantidad", ctx.nav.selectedItem.total, false, function()
+        ctx:goTo("send_to")
+    end)
+end
+
+function scr13.send_to(ctx)
+    compSelectInv(ctx, "Enviar: Destino", function(inv)
+        ctx.nav.toInv = inv
+        ctx:goTo("send_confirm")
+    end, ctx.nav.fromInv and ctx.nav.fromInv.name)
+end
+
+function scr13.send_confirm(ctx)
+    ctx:header("Enviar")
+    local n = ctx.nav
+    local y = 2
+    local si = sn(n.selectedItem.name)
+    if #si > ctx.W - 4 then si = si:sub(1, ctx.W - 6) .. ".." end
+    ctx:write(2, y, "Item: " .. si, colors.white, colors.black); y = y + 1
+    ctx:write(2, y, "Qty: " .. n.cantidad, colors.yellow, colors.black); y = y + 1
+    ctx:write(2, y, "De: " .. lib.getAlias(n.fromInv.name):sub(1, ctx.W - 6), colors.lime, colors.black); y = y + 1
+    ctx:write(2, y, "A:  " .. lib.getAlias(n.toInv.name):sub(1, ctx.W - 6), colors.cyan, colors.black); y = y + 2
+    ctx:btn(2, y, math.floor(ctx.W / 2) - 1, 2, "CANCEL", colors.white, colors.red, function()
+        ctx:goBack()
+    end)
+    ctx:btn(math.floor(ctx.W / 2) + 1, y, math.floor(ctx.W / 2) - 1, 2, "SEND", colors.white, colors.green, function()
+        ctx:goTo("send_exec")
+    end)
+end
+
+function scr13.send_exec(ctx)
+    ctx:header("Enviando...")
+    ctx:write(2, 3, "Processing...", colors.yellow, colors.black)
+    ui.queueAction({
+        type = "send",
+        ctx = ctx,
+        fromInv = ctx.nav.fromInv,
+        toInv = ctx.nav.toInv,
+        selectedItem = ctx.nav.selectedItem,
+        cantidad = ctx.nav.cantidad,
+    })
+end
+
+function scr13.send_result(ctx)
+    ctx:header("Resultado")
+    local n = ctx.nav
+    local y = 3
+    if n._sendMoved and n._sendMoved > 0 then
+        ctx:fill(2, y, ctx.W - 2, 2, colors.green)
+        ctx:write(3, y, "OK " .. n._sendMoved .. " enviados", colors.white, colors.green)
+    else
+        ctx:fill(2, y, ctx.W - 2, 2, colors.red)
+        ctx:write(3, y, "ERROR: 0 enviados", colors.white, colors.red)
+    end
+    y = y + 3
+    -- Undo
+    if n._sendMoved and n._sendMoved > 0 then
+        ctx:btn(2, y, ctx.W - 2, 1, "UNDO", colors.white, colors.orange, function()
+            local entry = st.history[1]
+            if entry and entry.undoable then
+                ui.queueAction({ type = "undo", ctx = ctx, entry = entry })
+            end
+        end)
+        y = y + 2
+    end
+    ctx:btn(2, ctx.H - 2, ctx.W - 2, 2, "BACK", colors.white, colors.blue, function()
+        n.screen = "menu"; n.history = {}; n.fromInv = nil; n.toInv = nil; n.selectedItem = nil
+    end)
+end
+
+-- ============================================================
+-- Categories management
+-- ============================================================
+
+function scr13.cat_list(ctx)
+    ctx:header("Categories")
+    local invs = st.inventories
+    if #invs == 0 then
+        ctx:write(2, 3, "No inventarios", colors.red, colors.black)
+        return
+    end
+    local n = ctx.nav
+    local pp = n.perPage
+    local si = (n.page - 1) * pp + 1
+    local ei = math.min(n.page * pp, #invs)
+    local y = 3
+    for i = si, ei do
+        local inv = invs[i]
+        local cat = lib.getCategory(inv.name)
+        local bg = (i % 2 == 0) and colors.blue or colors.gray
+        local catColor = cat and (lib.CATEGORY_COLORS[cat] or colors.white) or colors.lightGray
+        local catDisp = cat or "---"
+        local name = lib.getAlias(inv.name)
+        if #name > ctx.W - 12 then name = name:sub(1, ctx.W - 14) .. ".." end
+        ctx:btn(2, y, ctx.W - 2, 2, "", colors.white, bg, function()
+            n._catInv = inv.name
+            ctx:goTo("cat_select")
+        end)
+        ctx:write(3, y, name, colors.white, bg)
+        ctx:write(3, y + 1, catDisp, catColor, bg)
+        y = y + 3
+    end
+    ctx:paginate(#invs)
+    ctx:footer("Tap to set zone")
+end
+
+function scr13.cat_select(ctx)
+    ctx:header("Zona")
+    local n = ctx.nav
+    local invName = lib.getAlias(n._catInv or "?")
+    if #invName > ctx.W - 4 then invName = invName:sub(1, ctx.W - 6) .. ".." end
+    ctx:write(2, 2, invName, colors.cyan, colors.black)
+    local y = 4
+    -- None option
+    ctx:btn(2, y, ctx.W - 2, 1, "NONE", colors.white, lib.getCategory(n._catInv) == nil and colors.green or colors.gray, function()
+        lib.setCategory(n._catInv, nil)
+        lib.audit("CATEGORY", { inv = n._catInv, cat = "NONE" })
+        ctx:goBack()
+    end)
+    y = y + 2
+    for _, cat in ipairs(lib.CATEGORIES) do
+        local col = lib.CATEGORY_COLORS[cat] or colors.blue
+        local fg = lib.contrastFg(col)
+        local current = lib.getCategory(n._catInv) == cat
+        ctx:btn(2, y, ctx.W - 2, 2, cat, fg, current and colors.green or col, function()
+            lib.setCategory(n._catInv, cat)
+            lib.audit("CATEGORY", { inv = n._catInv, cat = cat })
+            ctx:goBack()
+        end)
+        y = y + 3
+    end
+end
+
+-- ============================================================
+-- Audit Log viewer
+-- ============================================================
+
+function scr13.audit_log(ctx)
+    ctx:header("Audit Log")
+    local al = st.auditLog
+    if #al == 0 then
+        ctx:write(2, 3, "No audit entries", colors.gray, colors.black)
+        ctx:footer("Operations recorded here")
+        return
+    end
+    -- Filter buttons
+    local n = ctx.nav
+    local filter = n._auditFilter or "ALL"
+    local filters = { "ALL", "XFER", "TASK", "RSTK", "ALRT" }
+    local fbw = math.floor((ctx.W - 2) / #filters)
+    for idx, f in ipairs(filters) do
+        local bx = 2 + (idx - 1) * fbw
+        ctx:btn(bx, 2, fbw - 1, 1, f, colors.white, filter == f and colors.green or colors.blue, function()
+            n._auditFilter = f; n.page = 1
+        end)
+    end
+
+    -- Filter entries
+    local filtered = {}
+    for _, entry in ipairs(al) do
+        local show = true
+        if filter == "XFER" then show = entry.action == "TRANSFER"
+        elseif filter == "TASK" then show = entry.action == "TASK"
+        elseif filter == "RSTK" then show = entry.action == "RESTOCK" or entry.action == "RESTOCK_CREATE"
+        elseif filter == "ALRT" then show = entry.action == "ALERT"
+        end
+        if show then table.insert(filtered, entry) end
+    end
+
+    local pp = n.perPage
+    local si = (n.page - 1) * pp + 1
+    local ei = math.min(n.page * pp, #filtered)
+    local y = 3
+    for i = si, ei do
+        local e = filtered[i]
+        local bg = (i % 2 == 0) and colors.gray or colors.black
+        ctx:fill(2, y, ctx.W - 2, 2, bg)
+        -- Action type color
+        local actCol = colors.white
+        if e.action == "TRANSFER" then actCol = colors.lime
+        elseif e.action == "TASK" then actCol = colors.cyan
+        elseif e.action == "RESTOCK" or e.action == "RESTOCK_CREATE" then actCol = colors.yellow
+        elseif e.action == "ALERT" then actCol = colors.orange
+        elseif e.action == "LOCK" then actCol = colors.red end
+        ctx:write(3, y, e.action:sub(1, 8), actCol, bg)
+        ctx:write(ctx.W - 7, y, e.time or "", colors.lightGray, bg)
+        -- Details line
+        local detail = ""
+        if e.details then
+            if e.details.item then detail = sn(e.details.item):sub(1, 10) end
+            if e.details.moved then detail = detail .. " x" .. e.details.moved end
+            if e.details.inv then detail = lib.getAlias(e.details.inv):sub(1, 12) end
+            if e.details.cat then detail = detail .. " " .. e.details.cat end
+        end
+        if #detail > ctx.W - 4 then detail = detail:sub(1, ctx.W - 6) .. ".." end
+        ctx:write(3, y + 1, detail, colors.lightGray, bg)
+        y = y + 3
+    end
+    ctx:paginate(#filtered)
+    ctx:footer(#filtered .. " / " .. #al .. " entries")
+end
+
+-- ============================================================
+-- PIN setup and Lock screen
+-- ============================================================
+
+function scr13.pin_setup(ctx)
+    ctx:header("PIN Setup")
+    local n = ctx.nav
+    local y = 3
+    if st.lockPin then
+        ctx:write(2, y, "PIN activo", colors.lime, colors.black)
+        y = y + 1
+        ctx:btn(2, y, ctx.W - 2, 1, "REMOVE PIN", colors.white, colors.red, function()
+            lib.setPin(nil)
+            lib.tLog("[LOCK] PIN removed")
+            lib.audit("PIN_REMOVE", {})
+            ctx:goBack()
+        end)
+        y = y + 2
+        ctx:write(2, y, "O set new PIN:", colors.gray, colors.black)
+        y = y + 1
+    else
+        ctx:write(2, y, "Set 4-digit PIN:", colors.white, colors.black)
+        y = y + 1
+    end
+    -- PIN display
+    local pinDisp = ""
+    for i = 1, 4 do
+        if i <= #(n._pinEntry or "") then pinDisp = pinDisp .. "* "
+        else pinDisp = pinDisp .. "_ " end
+    end
+    ctx:fill(2, y, ctx.W - 2, 1, colors.gray)
+    ctx:write(math.floor(ctx.W / 2) - 3, y, pinDisp, colors.yellow, colors.gray)
+    y = y + 2
+    -- Number pad (3x4 grid)
+    local nums = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "CLR", "0", "OK" }
+    local bw = math.floor((ctx.W - 4) / 3)
+    for idx, num in ipairs(nums) do
+        local row = math.floor((idx - 1) / 3)
+        local col = (idx - 1) % 3
+        local bx = 2 + col * (bw + 1)
+        local by = y + row * 2
+        if by > ctx.H - 2 then break end
+        local bg = colors.blue
+        if num == "CLR" then bg = colors.red
+        elseif num == "OK" then bg = colors.green end
+        ctx:btn(bx, by, bw, 1, num, colors.white, bg, function()
+            if num == "CLR" then
+                n._pinEntry = ""
+            elseif num == "OK" then
+                if #(n._pinEntry or "") == 4 then
+                    lib.setPin(n._pinEntry)
+                    lib.tLog("[LOCK] PIN set")
+                    lib.audit("PIN_SET", {})
+                    n._pinEntry = ""
+                    ctx:goBack()
+                end
+            else
+                if #(n._pinEntry or "") < 4 then
+                    n._pinEntry = (n._pinEntry or "") .. num
+                end
+            end
+        end)
+    end
+end
+
+-- ============================================================
+-- Lock screen renderer (used by all monitors when locked)
+-- ============================================================
+
+local function renderLockScreen(ctx, isControl)
+    ctx:clear(colors.black)
+    ctx:fill(1, 1, ctx.W, 1, colors.red)
+    ctx:write(2, 1, "LOCKED", colors.white, colors.red)
+    local y = math.floor(ctx.H / 2) - 2
+    if y < 3 then y = 3 end
+    ctx:write(math.floor(ctx.W / 2) - 4, y, "SISTEMA", colors.yellow, colors.black)
+    ctx:write(math.floor(ctx.W / 2) - 5, y + 1, "BLOQUEADO", colors.yellow, colors.black)
+    if isControl then
+        -- PIN entry on control monitor
+        y = y + 3
+        local pinEntry = st._lockPinEntry or ""
+        local pinDisp = ""
+        for i = 1, 4 do
+            if i <= #pinEntry then pinDisp = pinDisp .. "* "
+            else pinDisp = pinDisp .. "_ " end
+        end
+        ctx:fill(2, y, ctx.W - 2, 1, colors.gray)
+        ctx:write(math.floor(ctx.W / 2) - 3, y, pinDisp, colors.yellow, colors.gray)
+        y = y + 2
+        -- Number pad
+        local nums = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "CLR", "0", "OK" }
+        local bw = math.floor((ctx.W - 4) / 3)
+        for idx, num in ipairs(nums) do
+            local row = math.floor((idx - 1) / 3)
+            local col = (idx - 1) % 3
+            local bx = 2 + col * (bw + 1)
+            local by = y + row * 2
+            if by > ctx.H - 1 then break end
+            local bg = colors.blue
+            if num == "CLR" then bg = colors.red
+            elseif num == "OK" then bg = colors.green end
+            ctx:btn(bx, by, bw, 1, num, colors.white, bg, function()
+                if num == "CLR" then
+                    st._lockPinEntry = ""
+                elseif num == "OK" then
+                    if lib.checkPin(st._lockPinEntry or "") then
+                        lib.unlock()
+                        st._lockPinEntry = ""
+                        lib.tLog("[LOCK] System unlocked")
+                        lib.audit("UNLOCK", {})
+                    else
+                        st._lockPinEntry = ""
+                    end
+                else
+                    st._lockPinEntry = (st._lockPinEntry or "") .. num
+                    if #st._lockPinEntry > 4 then st._lockPinEntry = num end
+                end
+            end)
+        end
+    else
+        y = y + 3
+        ctx:write(math.floor(ctx.W / 2) - 6, y, "Enter PIN on", colors.gray, colors.black)
+        ctx:write(math.floor(ctx.W / 2) - 5, y + 1, "CONTROL mon", colors.gray, colors.black)
+    end
+end
+
+-- ============================================================
 --  MONITOR 12: DASHBOARD (2x7, techo, auto-refresh)
---  Enhanced: items/min, top items, disconnect warnings, alerts
+--  Enterprise KPIs: utilization, throughput, zones, restock
 -- ============================================================
 
 local function renderDashboard(ctx)
+    -- Lock screen override
+    if st.locked then
+        renderLockScreen(ctx, false)
+        return
+    end
+
     ctx:clear(colors.black)
     ctx:fill(1, 1, ctx.W, 1, colors.blue)
-    ctx:write(2, 1, "DB " .. fmtElapsed(os.clock() - st.startTime), colors.white, colors.blue)
-
-    -- Items/min on header
-    local ipm = lib.getItemsPerMinute()
-    if ipm > 0 then
-        local ipmStr = ipm .. "/m"
-        ctx:write(ctx.W - #ipmStr - 1, 1, ipmStr, colors.yellow, colors.blue)
-    end
+    ctx:write(2, 1, "TRANSFER v5.3", colors.white, colors.blue)
 
     local y = 2
 
-    -- Disconnect warnings
+    -- KPI bar
+    local util = lib.getStorageUtilization()
+    local ipm = lib.getItemsPerMinute()
+    local utilCol = util > 90 and colors.red or (util > 70 and colors.orange or colors.green)
+    ctx:fill(2, y, ctx.W - 2, 1, colors.gray)
+    ctx:write(3, y, util .. "% ", utilCol, colors.gray)
+    ctx:write(3 + #tostring(util) + 2, y, ipm .. "/m", colors.yellow, colors.gray)
+    ctx:write(ctx.W - 8, y, fmtElapsed(os.clock() - st.startTime), colors.lightGray, colors.gray)
+    y = y + 1
+
+    -- Warnings
     local discCount = 0
     for _ in pairs(st.disconnected) do discCount = discCount + 1 end
     if discCount > 0 then
@@ -2368,57 +2990,68 @@ local function renderDashboard(ctx)
         ctx:write(3, y, discCount .. " DISCONNECTED", colors.white, colors.red)
         y = y + 1
     end
-
-    -- Alert warnings
     local triggered = alerts.countTriggered()
     if triggered > 0 then
         ctx:fill(2, y, ctx.W - 2, 1, colors.orange)
         ctx:write(3, y, triggered .. " ALERTS!", colors.white, colors.orange)
         y = y + 1
     end
+    local pulling = restock.countPulling()
+    if pulling > 0 then
+        ctx:fill(2, y, ctx.W - 2, 1, colors.cyan)
+        ctx:write(3, y, pulling .. " RESTOCKING", colors.white, colors.cyan)
+        y = y + 1
+    end
 
-    -- Inventarios condensed (uses cached fill data)
+    -- Inventories with zone colors
     lib.refreshFillCache()
-    ctx:write(2, y, "INV", colors.yellow, colors.black); y = y + 1
     for _, inv in ipairs(st.inventories) do
-        if y >= ctx.H - 5 then break end
+        if y >= ctx.H - 4 then break end
         local used, total = lib.getInventoryFill(inv)
         local pct = total > 0 and math.floor(used / total * 100) or 0
-        local shortName = lib.getAlias(inv.name):sub(1, 10)
+        local shortName = lib.getAlias(inv.name):sub(1, 8)
         local col = pct > 90 and colors.red or (pct > 60 and colors.orange or colors.green)
-        -- Show disconnect mark
         local dc = st.disconnected[inv.name] and "!" or ""
-        ctx:write(2, y, dc .. shortName .. " " .. pct .. "%", col, colors.black)
+        local cat = lib.getCategory(inv.name)
+        local catMark = ""
+        if cat then
+            catMark = cat:sub(1, 1) .. " "
+        end
+        ctx:write(2, y, dc .. catMark .. shortName, col, colors.black)
+        -- Mini bar
+        local barW = ctx.W - 14 - #shortName
+        if barW > 2 then
+            local barX = ctx.W - barW - 2
+            local filled = math.max(0, math.floor(barW * pct / 100))
+            ctx:fill(barX, y, barW, 1, colors.gray)
+            if filled > 0 then ctx:fill(barX, y, filled, 1, col) end
+        end
+        ctx:write(ctx.W - 4, y, pct .. "%", col, colors.black)
         y = y + 1
     end
 
     if #st.inventories == 0 then
-        ctx:write(2, y, "None", colors.gray, colors.black); y = y + 1
+        ctx:write(2, y, "No inv", colors.gray, colors.black); y = y + 1
     end
     y = y + 1
 
-    -- Worker status
-    if st.workerActive then
-        local ws = st.workerStats
-        ctx:write(2, y, "WK:" .. ws.cycles .. "c " .. ws.totalMoved .. "i", colors.lime, colors.black); y = y + 1
-    else
-        ctx:write(2, y, "WK:off", colors.gray, colors.black); y = y + 1
+    -- Pipeline status
+    local statusLine = ""
+    if st.workerActive then statusLine = statusLine .. "WK " end
+    if tasks.countEnabled() > 0 then statusLine = statusLine .. "T:" .. tasks.countEnabled() .. " " end
+    if restock.countActive() > 0 then statusLine = statusLine .. "R:" .. restock.countActive() .. " " end
+    if #st.rules > 0 then statusLine = statusLine .. "RL:" .. #st.rules end
+    if statusLine ~= "" then
+        ctx:write(2, y, statusLine, colors.cyan, colors.black)
+        y = y + 1
     end
 
-    -- Tasks
-    if tasks.count() > 0 then
-        ctx:write(2, y, "TSK:" .. tasks.countEnabled() .. "/" .. tasks.count(), colors.cyan, colors.black); y = y + 1
-    end
-    y = y + 1
-
-    -- Top items moved
+    -- Top items
     local topItems = lib.getTopItems(3)
     if #topItems > 0 then
-        ctx:write(2, y, "TOP", colors.yellow, colors.black); y = y + 1
         for _, ti in ipairs(topItems) do
             if y >= ctx.H then break end
-            local nm = sn(ti.name):sub(1, ctx.W - 8)
-            ctx:write(2, y, nm .. " " .. ti.count, colors.lightGray, colors.black)
+            ctx:write(2, y, sn(ti.name):sub(1, ctx.W - 8) .. " " .. ti.count, colors.lightGray, colors.black)
             y = y + 1
         end
     end
@@ -2448,6 +3081,34 @@ local function renderActivity(ctx)
         y = y + 1
     end
 
+    -- Restock status
+    local pulling = restock.countPulling()
+    local restockActive = restock.countActive()
+    if restockActive > 0 then
+        ctx:fill(2, y, ctx.W - 2, 1, pulling > 0 and colors.green or colors.gray)
+        local rstTxt = "RESTOCK:" .. restockActive
+        if pulling > 0 then rstTxt = rstTxt .. " PULL:" .. pulling end
+        ctx:write(3, y, rstTxt, colors.white, pulling > 0 and colors.green or colors.gray)
+        y = y + 1
+    end
+
+    -- Pipeline summary
+    local taskActive = 0
+    for _, t in ipairs(st.tasks or {}) do
+        if t.enabled then taskActive = taskActive + 1 end
+    end
+    if taskActive > 0 or st.rulesRunning then
+        ctx:fill(2, y, ctx.W - 2, 1, colors.blue)
+        local pipeTxt = ""
+        if taskActive > 0 then pipeTxt = "TASKS:" .. taskActive end
+        if st.rulesRunning then
+            if #pipeTxt > 0 then pipeTxt = pipeTxt .. " " end
+            pipeTxt = pipeTxt .. "RULES:ON"
+        end
+        ctx:write(3, y, pipeTxt, colors.white, colors.blue)
+        y = y + 1
+    end
+
     y = y + 1
 
     -- Log
@@ -2458,6 +3119,7 @@ local function renderActivity(ctx)
         local col = colors.lightGray
         if l:find("ERROR") or l:find("WARN") then col = colors.red
         elseif l:find("ALERT") then col = colors.orange
+        elseif l:find("RESTOCK") then col = colors.cyan
         elseif l:find("OK") or l:find("LISTO") then col = colors.lime end
         local text = l:sub(1, ctx.W - 2)
         ctx:write(2, y, text, col, colors.black)
@@ -2581,6 +3243,18 @@ function ui.processPending()
         end)
         action.ctx.nav._grpResult = result
         action.ctx.nav.screen = "grp_result"
+    elseif action.type == "send" then
+        local item = action.selectedItem or action.item
+        local movido = lib.moveItems(action.fromInv.peripheral, action.toInv.name, item.name, action.cantidad)
+        action.ctx.nav._sendMoved = movido
+        if movido > 0 then
+            lib.tLog("OK: " .. movido .. "x " .. sn(item.name) .. " >> " .. lib.getAlias(action.toInv.name))
+        else
+            lib.tLog("ERROR: No se envio " .. sn(item.name))
+        end
+        lib.addHistory(action.fromInv.name, action.toInv.name, item.name, action.cantidad, movido)
+        lib.audit("SEND", { from = action.fromInv.name, to = action.toInv.name, item = item.name, qty = action.cantidad, moved = movido })
+        action.ctx.nav.screen = "send_result"
     elseif action.type == "undo" or action.type == "undo_history" then
         local moved = lib.undoTransfer(action.entry)
         if action.type == "undo" then
@@ -2597,6 +3271,13 @@ end
 function ui.renderMonitor(key)
     local m = ui.monitors[key]
     if not m then return end
+
+    -- Lock screen: block all interactive monitors, show lock on dashboards too
+    if st.locked then
+        renderLockScreen(m, key == "control")
+        m.dirty = false
+        return
+    end
 
     if m.screens then
         m:clear()
@@ -2625,6 +3306,24 @@ end
 function ui.handleTouch(side, x, y)
     for key, m in pairs(ui.monitors) do
         if m.monName == side then
+            -- Lock screen interception
+            if st.locked then
+                if key == "control" then
+                    -- Only allow PIN entry on control monitor
+                    if m:handleTouch(x, y) then
+                        -- Re-render all monitors (unlock affects all)
+                        if not st.locked then
+                            ui.renderAll()
+                        else
+                            ui.renderMonitor("control")
+                        end
+                        return true
+                    end
+                end
+                -- Block touches on all other monitors when locked
+                return false
+            end
+
             if m.screens and m:handleTouch(x, y) then
                 ui.renderMonitor(key)
                 return true
