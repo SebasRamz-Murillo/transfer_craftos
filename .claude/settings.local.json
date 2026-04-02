@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash('PATH=/c/Program Files/GitHub CLI:$PATH')",
+      "Bash(command -v gh)",
+      "Bash(/c/Program Files/GitHub CLI/gh.exe --version)",
+      "Read(//c/Program Files//**)",
+      "Bash(wc -l \"C:/Users/sebas/OneDrive/Documentos/GitHub/transfer_craftos/.claude/worktrees/nostalgic-cori/\"*.lua)",
+      "Bash(wc -l *.lua)",
+      "Bash(gh pr:*)",
+      "Bash(where gh.exe)",
+      "Read(//c/Users/sebas/AppData/Local/Programs/GitHub CLI/**)",
+      "Read(//c/Program Files \\(x86\\)/GitHub CLI/**)",
+      "Bash(git config:*)"
+    ]
+  }
+}
